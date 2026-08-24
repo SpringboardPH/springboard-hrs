@@ -7,7 +7,7 @@ import { Plus, Search, UserX, Pencil, Eye, Users } from 'lucide-react'
 
 export default function EmployeeListPage() {
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState('active')
   const [group, setGroup] = useState('')
   const [page, setPage] = useState(1)
   const [confirmConfig, setConfirmConfig] = useState({ open: false, onConfirm: () => {}, message: '', title: '' })
