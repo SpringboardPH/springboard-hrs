@@ -231,23 +231,21 @@ class EmployeeController extends Controller
                 ->update(['status' => 'archived']);
 
             $employee->update(['status' => 'inactive']);
-            $employee->delete(); // soft delete employee
 
             if ($employee->user_id) {
                 $user = User::find($employee->user_id);
                 if ($user) {
-                    $user->delete(); // soft delete linked user
+                    $user->delete();
                 }
             }
         });
 
-        // Log audit event for employee deactivation
         \App\Models\AuditLog::log(
             'EMPLOYEE_DEACTIVATED',
             "Employee {$employeeName} (ID: {$employeeId}) deactivated",
             $employee,
             ['status' => 'active'],
-            ['status' => 'inactive', 'deleted_at' => (string) now()]
+            ['status' => 'inactive']
         );
 
         return response()->json([
@@ -279,12 +277,11 @@ class EmployeeController extends Controller
                 ->update(['status' => 'archived']);
 
             $employee->update(['status' => 'inactive']);
-            $employee->delete(); // soft delete employee
 
             if ($employee->user_id) {
                 $user = User::find($employee->user_id);
                 if ($user) {
-                    $user->delete(); // soft delete linked user
+                    $user->delete();
                 }
             }
         });
