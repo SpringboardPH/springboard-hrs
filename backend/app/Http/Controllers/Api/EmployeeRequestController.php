@@ -196,15 +196,21 @@ class EmployeeRequestController extends Controller
                 }
             }
 
-            // Half-day / undertime approval excuses the stamped shortfall.
-            if (in_array($employeeRequest->request_type, ['half_day', 'undertime'], true)) {
-                $logId = $employeeRequest->meta['attendance_log_id'] ?? null;
-                if ($logId) {
-                    \App\Models\AttendanceLog::where('id', $logId)
-                        ->where('employee_id', $employeeRequest->employee_id)
-                        ->whereIn('status', ['half_day', 'undertime'])
-                        ->update(['status' => 'completed']);
-                }
+            // Undertime approval excuses the stamped shortfall (full day).
+            // Half-day approval confirms the half day — keep/stamp half_day so
+            // payroll docks half a day instead of crediting a completed day.
+            $logId = $employeeRequest->meta['attendance_log_id'] ?? null;
+            if ($logId && $employeeRequest->request_type === 'undertime') {
+                \App\Models\AttendanceLog::where('id', $logId)
+                    ->where('employee_id', $employeeRequest->employee_id)
+                    ->whereIn('status', ['half_day', 'undertime'])
+                    ->update(['status' => 'completed']);
+            }
+            if ($logId && $employeeRequest->request_type === 'half_day') {
+                \App\Models\AttendanceLog::where('id', $logId)
+                    ->where('employee_id', $employeeRequest->employee_id)
+                    ->whereNotIn('status', ['absent', 'on_leave', 'rest_day'])
+                    ->update(['status' => 'half_day']);
             }
 
             // Loan approval: create the loan for employee-initiated cash advances

@@ -500,9 +500,8 @@ class PayrollController extends Controller
             // filed ahead of time ("I need to leave at 3pm Friday") and have no attendance
             // log to read the deviation from. Auto-filed requests are the opposite — they
             // are raised FROM a log, and their decision is already recorded as that log's
-            // status, so counting them here would double-deduct. Worse, for half_day it
-            // would invert the polarity: approving to EXCUSE a shortfall would deduct half
-            // a day at the line below.
+            // status, so counting them here would double-deduct (approved half-day already
+            // docks via the log's half_day status).
             $approvedRequests = \App\Models\EmployeeRequest::where('employee_id', $employee->id)
                 ->whereIn('request_type', ['overtime', 'half_day', 'undertime'])
                 ->where('status', 'approved')

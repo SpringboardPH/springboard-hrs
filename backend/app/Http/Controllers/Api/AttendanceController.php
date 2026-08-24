@@ -250,13 +250,16 @@ class AttendanceController extends Controller
 
         $shortByHours = round($expectedHours - $hoursWorked, 2);
         $label = $type === 'half_day' ? 'Half Day' : 'Undertime';
+        $decisionHint = $type === 'half_day'
+            ? 'Approve to confirm the half day — half a day\'s pay will be deducted.'
+            : 'Approve to excuse the shortfall; reject to apply the deduction.';
 
         \App\Models\EmployeeRequest::autoFile(
             $log,
             $type,
             "{$label} on {$dateLabel}",
             "Clocked out at {$log->clock_out_time} after working {$worked}h (required: {$expected}h). Short by {$shortByHours}h. "
-                . 'Approve to excuse the shortfall; reject to apply the deduction.',
+                . $decisionHint,
             [
                 'hours_worked'      => $worked,
                 'required_hours'    => $expectedHours,

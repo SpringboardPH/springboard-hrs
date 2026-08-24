@@ -410,11 +410,14 @@ export default function RequestsPage() {
         {approveTarget && (
           <div className="space-y-3">
             <p className="text-sm text-gray-700">Approve this {formatType(approveTarget.request_type)} request from {approveTarget.employee?.first_name} {approveTarget.employee?.last_name}?</p>
-            {/* Auto-filed shortfalls invert the usual polarity: approving EXCUSES the
-                deduction rather than granting anything, so spell it out before HR clicks. */}
-            {approveTarget.meta?.auto_filed && ['half_day', 'undertime'].includes(approveTarget.request_type) && (
+            {approveTarget.meta?.auto_filed && approveTarget.request_type === 'undertime' && (
               <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
                 This shortfall was detected automatically at clock-out. <strong>Approving excuses it</strong> — no deduction will be applied. Reject instead to apply the deduction.
+              </p>
+            )}
+            {approveTarget.meta?.auto_filed && approveTarget.request_type === 'half_day' && (
+              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                This half day was detected automatically at clock-out. <strong>Approving confirms it</strong> — half a day&apos;s pay will be deducted. The attendance log stays Half Day, not Completed.
               </p>
             )}
             <FormField label="Response Notes (optional)"><textarea className="input h-20 resize-none" value={approveNotes} onChange={e => setApproveNotes(e.target.value)} placeholder="Add optional notes…" /></FormField>
