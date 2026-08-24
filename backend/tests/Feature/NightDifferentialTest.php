@@ -369,7 +369,7 @@ class NightDifferentialTest extends TestCase
         ]);
 
         $response->assertCreated();
-        $this->assertSame('late', $response->json('data.status'));
+        $this->assertSame('working', $response->json('data.status'));
 
         $this->assertSame(1, AttendanceLog::where('employee_id', $employee->id)->count());
         $log = AttendanceLog::where('employee_id', $employee->id)->sole();
@@ -443,7 +443,7 @@ class NightDifferentialTest extends TestCase
             'employee_id' => $onTimeEmployee->id,
         ]);
         $response->assertCreated();
-        $this->assertSame('late', $response->json('data.status'));
+        $this->assertSame('working', $response->json('data.status'));
 
         $lateArrivalEmployee = $this->makeEmployee('5b');
         $this->assignSchedule($lateArrivalEmployee, $template);

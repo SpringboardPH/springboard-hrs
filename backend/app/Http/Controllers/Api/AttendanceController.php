@@ -201,13 +201,22 @@ class AttendanceController extends Controller
     }
 
     /**
-     * File any pay-changing deviation from the expected hours as a pending HR request.
-     * The log keeps the factual baseline status ('late'/'completed') set at clock-out;
-     * only the request decision writes 'overtime'/'half_day'/'undertime' onto it.
+     * File OT (post-grace tail) and hours shortfalls already stamped on the log.
+     * Skip grace-sized late: that docks as late minutes with no excuse request.
      */
-    private function fileDeviationRequest(AttendanceLog $log, float $hoursWorked, int|float $expectedHours, bool $isRestDay = false): void
-    {
-        $type = AttendanceService::classifyDeviation($hoursWorked, $expectedHours);
+    private function fileDeviationRequest(
+        AttendanceLog $log,
+        float $hoursWorked,
+        int|float $expectedHours,
+        bool $isRestDay = false,
+        float $overtimeHours = 0.0
+    ): void {
+        $type = AttendanceService::classifyDeviation(
+            $hoursWorked,
+            $expectedHours,
+            $overtimeHours,
+            (string) $log->status
+        );
         if (!$type) {
             return;
         }
@@ -223,14 +232,14 @@ class AttendanceController extends Controller
         $dateLabel = $log->date->format('M d, Y');
 
         if ($type === 'overtime') {
-            $overtimeHours = round($hoursWorked - $expectedHours, 2);
+            $otHours = round($overtimeHours > 0 ? $overtimeHours : ($hoursWorked - $expectedHours), 2);
             \App\Models\EmployeeRequest::autoFile(
                 $log,
                 'overtime',
                 ($isRestDay ? 'Rest Day Overtime on ' : 'Overtime on ') . $dateLabel,
-                "Clocked out at {$log->clock_out_time} after working {$worked}h (required: {$expected}h). Overtime: {$overtimeHours}h.",
+                "Clocked out at {$log->clock_out_time} after working {$worked}h (required: {$expected}h). Overtime: {$otHours}h.",
                 [
-                    'overtime_hours' => $overtimeHours,
+                    'overtime_hours' => $otHours,
                     'hours_worked'   => $worked,
                     'required_hours' => $expectedHours,
                     'is_rest_day'    => $isRestDay,
@@ -573,7 +582,7 @@ class AttendanceController extends Controller
                 ], 400);
             }
 
-            $initialStatus = $clockInMinutes > $clockInGraceEndMinutes ? 'late' : 'working';
+            $initialStatus = 'working';
         }
 
         // Create or update attendance log
@@ -704,7 +713,14 @@ class AttendanceController extends Controller
 
             // Every pay-changing deviation (overtime, half day, undertime) is filed as a
             // pending request for HR rather than written straight onto the log.
-            $this->fileDeviationRequest($log, $hoursWorked, $requiredHours, $isRestDay);
+            $flexiDetails = AttendanceService::calculateFlexiDetails($log->clock_in_time, $clockOutTime, $requiredHours);
+            $this->fileDeviationRequest(
+                $log,
+                $flexiDetails['hours_worked'],
+                $requiredHours,
+                $isRestDay,
+                $flexiDetails['overtime_hours']
+            );
 
             \App\Models\AuditLog::log(
                 'CLOCK_OUT',
@@ -791,15 +807,13 @@ class AttendanceController extends Controller
         // status calculation below clobber it when HR pre-creates a log with only a
         // clock-in time and the employee later closes it out via the normal flow.
         if ($log->status !== 'rest_day') {
-            $log->status = $this->calculateStatus(
+            $log->status = AttendanceService::calculateStatus(
                 $log->clock_in_time,
                 $clockOutTime,
-                $expectedHours,
-                $workStartTime,
-                $dayRule && isset($dayRule['late_threshold_minutes'])
-                    ? $dayRule['late_threshold_minutes']
-                    : ($schedule && $schedule->template ? $schedule->template->late_threshold_minutes : 0),
-                $dayRule
+                $expectedHours ?? self::REQUIRED_HOURS,
+                $workStartTime ?? self::WORK_START_TIME,
+                $dayRule,
+                $workEndTime ?? null
             );
         }
 
@@ -823,9 +837,17 @@ class AttendanceController extends Controller
                 $log->clock_in_time,
                 $clockOutTime,
                 $expectedHours,
-                $workStartTime ?? self::WORK_START_TIME
+                $workStartTime ?? self::WORK_START_TIME,
+                $dayRule,
+                $workEndTime ?? null
             );
-            $this->fileDeviationRequest($log, $details['hours_worked'], $expectedHours, $isRestDay);
+            $this->fileDeviationRequest(
+                $log,
+                $details['hours_worked'],
+                $expectedHours,
+                $isRestDay,
+                $details['overtime_hours']
+            );
         }
 
         // Log audit event for clock out

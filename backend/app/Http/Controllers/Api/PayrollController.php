@@ -362,7 +362,9 @@ class PayrollController extends Controller
                         $log->clock_in_time,
                         $log->clock_out_time,
                         $expectedHours,
-                        $workStart
+                        $workStart,
+                        $dayRule,
+                        $workEnd
                     );
 
                     $earlyDepartureMin = 0;
@@ -432,14 +434,12 @@ class PayrollController extends Controller
                         : 0;
                     $metrics['rest_day_ot_hours'] += $overtimeHours;
                 } else {
-                    $metrics['total_hours'] += $details['hours_worked'];
+                    $creditedHours = in_array($log->status, ['completed', 'overtime'], true)
+                        ? $expectedHours
+                        : $details['hours_worked'];
+                    $metrics['total_hours'] += $creditedHours;
                     $metrics['overtime_hours'] += $overtimeHours;
-                    // Only a day with actual logged hours is a PAID worked day. An open punch
-                    // (clocked in, never clocked out) or a zero-duration log has no hours, so it
-                    // must not inflate days_worked / base pay. This is what over-counts flexi
-                    // employees on an all-days-enabled template, where a stray weekend punch is
-                    // not a rest day but still shouldn't be paid a full day.
-                    if ($details['hours_worked'] > 0) {
+                    if ($details['hours_worked'] > 0 || in_array($log->status, ['completed', 'overtime'], true)) {
                         $daysWorkedCount++;
                         $countedWorkDates[$dateStr] = true;
                     }
