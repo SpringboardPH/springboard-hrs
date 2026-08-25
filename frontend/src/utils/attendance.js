@@ -150,8 +150,9 @@ export const getClockWindow = (schedule, sysClock = null) => {
   }
 
   const formatTime = (m) => {
-    const h = Math.floor(m / 60)
-    const min = m % 60
+    const normalized = ((m % 1440) + 1440) % 1440
+    const h = Math.floor(normalized / 60)
+    const min = normalized % 60
     return `${h.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`
   }
 
@@ -231,6 +232,21 @@ export const getClockWindow = (schedule, sysClock = null) => {
     outEnd = parse(template.clock_out_end || template.work_end_time)
   }
 
+  const shiftInMinutes = workStartMinutes || inStart + 60
+  const shiftOutMinutes = workEndMinutes || outEnd
+  const wrapsMidnight =
+    template.type === 'night' &&
+    shiftInMinutes > 0 &&
+    shiftOutMinutes > 0 &&
+    shiftOutMinutes < shiftInMinutes
+
+  let compareMinutes = currentMinutes
+  if (wrapsMidnight) {
+    if (outEnd < inStart) outEnd += 1440
+    if (outStart < inStart) outStart += 1440
+    if (compareMinutes < inStart) compareMinutes += 1440
+  }
+
   return {
     inStart,
     inEnd,
@@ -241,9 +257,10 @@ export const getClockWindow = (schedule, sysClock = null) => {
     workStartMinutes,
     workEndMinutes,
     normalInStart,
-    currentMinutes,
-    isWithinInWindow: currentMinutes >= inStart && currentMinutes <= inEnd,
-    isWithinOutWindow: currentMinutes >= outStart && currentMinutes <= outEnd,
+    currentMinutes: compareMinutes,
+    wrapsMidnight,
+    isWithinInWindow: compareMinutes >= inStart && compareMinutes <= inEnd,
+    isWithinOutWindow: compareMinutes >= outStart && compareMinutes <= outEnd,
     formatTime
   }
 }
