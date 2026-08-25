@@ -417,7 +417,7 @@ export default function RequestsPage() {
             )}
             {approveTarget.meta?.auto_filed && approveTarget.request_type === 'half_day' && (
               <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                This half day was detected automatically at clock-out. <strong>Approving confirms it</strong> — half a day&apos;s pay will be deducted. The attendance log stays Half Day, not Completed.
+                This half day was detected automatically at clock-out. <strong>Approving marks it Half Day</strong> — pay still follows hours worked, not a flat half-day deduction.
               </p>
             )}
             <FormField label="Response Notes (optional)"><textarea className="input h-20 resize-none" value={approveNotes} onChange={e => setApproveNotes(e.target.value)} placeholder="Add optional notes…" /></FormField>

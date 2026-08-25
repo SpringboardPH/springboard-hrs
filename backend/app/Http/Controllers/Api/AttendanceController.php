@@ -251,7 +251,7 @@ class AttendanceController extends Controller
         $shortByHours = round($expectedHours - $hoursWorked, 2);
         $label = $type === 'half_day' ? 'Half Day' : 'Undertime';
         $decisionHint = $type === 'half_day'
-            ? 'Approve to confirm the half day — half a day\'s pay will be deducted.'
+            ? 'Approve to mark Half Day. Pay follows hours worked, not a flat half-day deduction.'
             : 'Approve to excuse the shortfall; reject to apply the deduction.';
 
         \App\Models\EmployeeRequest::autoFile(

@@ -197,8 +197,7 @@ class EmployeeRequestController extends Controller
             }
 
             // Undertime approval excuses the stamped shortfall (full day).
-            // Half-day approval confirms the half day — keep/stamp half_day so
-            // payroll docks half a day instead of crediting a completed day.
+            // Half-day approval only marks the log; payroll still docks hours.
             $logId = $employeeRequest->meta['attendance_log_id'] ?? null;
             if ($logId && $employeeRequest->request_type === 'undertime') {
                 \App\Models\AttendanceLog::where('id', $logId)

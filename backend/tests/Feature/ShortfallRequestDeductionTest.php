@@ -13,8 +13,8 @@ use Tests\TestCase;
 /**
  * Undertime is a pay-changing deviation whose request polarity is the inverse of
  * overtime: approving an auto-filed undertime EXCUSES it; rejecting applies the
- * deduction. Half-day is different — approving confirms the half day and docks
- * half a day's pay rather than rewriting the log to completed.
+ * deduction. Half-day is a status mark only: approving keeps half_day on the
+ * log and payroll docks the hour shortfall, not a flat half daily rate.
  */
 class ShortfallRequestDeductionTest extends TestCase
 {
@@ -152,11 +152,10 @@ class ShortfallRequestDeductionTest extends TestCase
     }
 
     /**
-     * Approving a half-day confirms it: the log stays (or becomes) half_day and
-     * payroll docks half the daily rate. Auto-filed requests must still be skipped
-     * in the employee-initiated adjustment block so that dock is not applied twice.
+     * Approving a half-day only marks the log. Pay is hour-based: left at 13:00
+     * against 18:00 is 300 min × (1000/8)/60 = 625 undertime, not half a daily rate.
      */
-    public function test_approved_auto_filed_half_day_docks_half_a_day()
+    public function test_approved_auto_filed_half_day_docks_hours_not_half_a_day()
     {
         $employee = $this->makeEmployee('E');
         $log = $this->makeShortLog($employee, 'half_day');
@@ -172,8 +171,8 @@ class ShortfallRequestDeductionTest extends TestCase
         $this->generatePayroll();
 
         $payroll = Payroll::where('employee_id', $employee->id)->sole();
-        $this->assertEquals(500.00, (float) ($payroll->deductions['Half Day'] ?? 0));
-        $this->assertEquals(0.0, (float) ($payroll->deductions['Undertime'] ?? 0));
+        $this->assertEquals(0.0, (float) ($payroll->deductions['Half Day'] ?? 0));
+        $this->assertEquals(625.00, (float) ($payroll->deductions['Undertime'] ?? 0));
     }
 
     public function test_approving_half_day_does_not_rewrite_completed()

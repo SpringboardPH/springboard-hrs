@@ -96,7 +96,7 @@ class AttendanceService
             $lateMinutes = $shortfallMinutes;
         }
 
-        $undertimeMinutes = $status === 'undertime'
+        $undertimeMinutes = ($status === 'undertime' || $status === 'half_day')
             ? max(0, $shortfallMinutes - $arrivalDock)
             : 0;
 
@@ -157,7 +157,7 @@ class AttendanceService
             'hours_worked' => $hoursWorked,
             'overtime_hours' => $overtimeHours,
             'late_minutes' => 0,
-            'undertime_minutes' => $status === 'undertime' ? $undertimeMin : 0,
+            'undertime_minutes' => in_array($status, ['undertime', 'half_day'], true) ? $undertimeMin : 0,
             'status' => $status,
         ];
     }
