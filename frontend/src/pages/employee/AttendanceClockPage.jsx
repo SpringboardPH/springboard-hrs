@@ -15,7 +15,7 @@ import { PageHeader, PageSpinner, ScheduleDisplay, ConfirmModal, AlertModal, Mod
 import GeofenceMapPreview from '../../components/GeofenceMapPreview.jsx'
 import { Clock, LogOut, AlertCircle, CalendarDays, Sparkles, MapPin } from 'lucide-react'
 import { useAuth } from '../../store/AuthContext'
-import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff } from '../../utils/attendance'
+import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff, canEmployeeClockIn } from '../../utils/attendance'
 
 // Resolve GPS coords for geo-tagging; resolves null if unsupported/denied/timeout
 // so clock-in always proceeds. ponytail: no library, browser Geolocation API only.
@@ -293,10 +293,14 @@ export default function AttendanceClockPage() {
     sysClock,
     openShiftDayOfWeek != null ? { openShiftDayOfWeek } : {}
   )
-  const canClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes >= window.inStart && window.currentMinutes <= window.outEnd
+  const canClockIn = canEmployeeClockIn(window, {
+    overnightClockInBlocked: Boolean(todayAttendance?.overnight_clock_in_blocked),
+  })
   const canClockOut = Boolean(window) && Boolean(isClockedIn) && !isClockedOut
   const isTooEarlyToClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes < window.inStart
-  const isClockInWindowClosed = Boolean(window) && !window.isInactiveDay && window.currentMinutes > window.outEnd
+  const isClockInWindowClosed = Boolean(window) && !window.isInactiveDay && (
+    window.currentMinutes > window.outEnd || Boolean(todayAttendance?.overnight_clock_in_blocked)
+  )
 
   // Formatted display values — show system clock, not browser clock
   const displayDateLabel = displayTime

@@ -291,6 +291,14 @@ export const getClockWindow = (schedule, sysClock = null, options = {}) => {
     formatTime
   }
 }
+
+export const canEmployeeClockIn = (win, { overnightClockInBlocked = false } = {}) =>
+  Boolean(win)
+  && !win.isInactiveDay
+  && !overnightClockInBlocked
+  && win.currentMinutes >= win.inStart
+  && win.currentMinutes <= win.outEnd
+
 export const calculateAttendanceStatus = (clockIn, clockOut, expectedHours, workStart, schedule = null, logDate = null) => {
   if (!clockIn) return 'absent'
   
