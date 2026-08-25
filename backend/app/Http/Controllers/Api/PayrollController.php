@@ -27,12 +27,9 @@ class PayrollController extends Controller
     /**
      * Close out any half_day / undertime request still pending when payroll runs.
      *
-     * Approving one of these excuses the shortfall, so a request left pending forever
-     * would be a permanent free pass — pending and approved both suppress the
-     * deduction. Generating payroll is the deadline: anything HR has not excused by
-     * now is treated as not excused, which stamps the shortfall onto the log so the
-     * deduction applies. HR has the whole cutoff to act, and reverting the payroll to
-     * draft does not un-reject these — that is a deliberate manual decision.
+     * These statuses are marks only; pay follows hours. A request left pending
+     * still needs the log stamped so the hour shortfall docks. Generating payroll
+     * is the deadline. Reverting payroll to draft does not un-reject these.
      */
     private function resolvePendingShortfallRequests(int $employeeId, string $start, string $end): void
     {
@@ -317,9 +314,8 @@ class PayrollController extends Controller
                         $expectedHours
                     );
                     // Flexi has no fixed end time — undertime is purely hours-based.
-                    // half_day is a label only; the hour shortfall still docks here.
-                    // 'late' only docks late minutes (below) — undertime minutes
-                    // apply once a rejected undertime request stamps the log.
+                    // half_day / undertime are labels only; the hour shortfall still docks.
+                    // 'late' only docks late minutes (below).
                     $earlyDepartureMin = in_array($log->status, ['completed', 'late', 'overtime'])
                         ? 0
                         : $details['undertime_minutes'];
@@ -362,7 +358,7 @@ class PayrollController extends Controller
                     );
 
                     $earlyDepartureMin = 0;
-                    // half_day is a label only — hours still dock as early departure.
+                    // half_day / undertime are labels only — hours still dock as early departure.
                     // 'late' only docks late minutes (below).
                     if (!in_array($log->status, ['completed', 'late', 'overtime'])) {
                         $clockOutMin = $log->clock_out_time

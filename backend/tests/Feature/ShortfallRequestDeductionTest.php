@@ -11,10 +11,9 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * Undertime is a pay-changing deviation whose request polarity is the inverse of
- * overtime: approving an auto-filed undertime EXCUSES it; rejecting applies the
- * deduction. Half-day is a status mark only: approving keeps half_day on the
- * log and payroll docks the hour shortfall, not a flat half daily rate.
+ * Half-day and undertime are status marks only. Approving stamps the type onto
+ * the log (not completed) and payroll docks the hour shortfall. Overtime is the
+ * inverse: approval grants the premium.
  */
 class ShortfallRequestDeductionTest extends TestCase
 {
@@ -70,7 +69,7 @@ class ShortfallRequestDeductionTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_approving_an_auto_filed_shortfall_excuses_the_deduction()
+    public function test_approving_an_auto_filed_undertime_marks_and_docks_hours()
     {
         $employee = $this->makeEmployee('A');
         $log = $this->makeShortLog($employee);
@@ -78,16 +77,15 @@ class ShortfallRequestDeductionTest extends TestCase
 
         $hr = User::factory()->create(['role' => 'hr']);
         $this->actingAs($hr)
-            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Excused.'])
+            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Confirmed undertime.'])
             ->assertOk();
 
-        // Approval must NOT stamp the shortfall onto the log.
-        $this->assertEquals('completed', $log->fresh()->status);
+        $this->assertEquals('undertime', $log->fresh()->status);
 
         $this->generatePayroll();
 
         $payroll = Payroll::where('employee_id', $employee->id)->sole();
-        $this->assertEquals(0.0, (float) ($payroll->deductions['Undertime'] ?? 0));
+        $this->assertEquals(625.00, (float) ($payroll->deductions['Undertime'] ?? 0));
     }
 
     public function test_rejecting_an_auto_filed_shortfall_applies_the_deduction()
