@@ -50,6 +50,8 @@ const postMidnight = { day_of_week: 3, minutes_since_midnight: 60, time: '01:00:
 const wedEnd = { day_of_week: 3, minutes_since_midnight: 6 * 60, time: '06:00:00', date: '2026-08-26' }
 const wedMorning = { day_of_week: 3, minutes_since_midnight: 9 * 60, time: '09:00:00', date: '2026-08-26' }
 const tooEarly = { day_of_week: 2, minutes_since_midnight: 20 * 60, time: '20:00:00', date: '2026-08-25' }
+const openEarly = { day_of_week: 3, minutes_since_midnight: 5 * 60 + 58, time: '05:58:00', date: '2026-08-26' }
+const openLate = { day_of_week: 3, minutes_since_midnight: 6 * 60 + 16, time: '06:16:00', date: '2026-08-26' }
 
 const nightEvening = getClockWindow(nightSchedule, evening)
 assert(canClockIn(nightEvening), 'night shift allows clock-in at Tue 21:11 (early window)')
@@ -73,6 +75,14 @@ assert(!canClockIn(dayEvening), 'standard 9-6 still blocks clock-in at 21:11')
 
 const nightFmt = getClockWindow(nightSchedule, evening)
 assert(nightFmt.formatTime(nightFmt.outEnd) === '06:00', 'formatTime keeps wall-clock for wrapped outEnd')
+
+const openShiftEarly = getClockWindow(nightSchedule, openEarly, { openShiftDayOfWeek: 2 })
+assert(openShiftEarly.currentMinutes < openShiftEarly.outStart, 'open Tue shift at Wed 05:58 is early for clock-out')
+assert(openShiftEarly.currentMinutes <= openShiftEarly.outEnd, 'open Tue shift at Wed 05:58 still before outEnd')
+
+const openShiftLate = getClockWindow(nightSchedule, openLate, { openShiftDayOfWeek: 2 })
+assert(!(openShiftLate.currentMinutes < openShiftLate.outStart), 'open Tue shift at Wed 06:16 is not early')
+assert(openShiftLate.currentMinutes > openShiftLate.outEnd, 'open Tue shift at Wed 06:16 is past outEnd')
 
 if (process.exitCode) {
   console.error('\nverify-night-clock-window: FAILED')

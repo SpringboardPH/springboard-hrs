@@ -255,6 +255,14 @@ export default function AttendanceClockPage() {
   const isOnLeave = todayAttendance?.on_leave ?? false
   const isClockedIn = todayAttendance?.clock_in_time
   const isClockedOut = todayAttendance?.clock_out_time
+  const shiftDate = todayAttendance?.shift_date
+  const openShiftDayOfWeek = (() => {
+    if (!isClockedIn || isClockedOut || !shiftDate) return null
+    const parts = String(shiftDate).slice(0, 10).split('-').map(Number)
+    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null
+    const [y, m, d] = parts
+    return new Date(y, m - 1, d).getDay()
+  })()
   const monthlyLogs = monthlyData?.data ?? []
   const statusCounts = monthlyLogs.reduce((acc, log) => {
     const status = log.status || 'unknown'
@@ -280,7 +288,11 @@ export default function AttendanceClockPage() {
   }
 
   // Pass sysClock to window check so it uses the virtual time
-  const window = getClockWindow(currentSchedule, sysClock)
+  const window = getClockWindow(
+    currentSchedule,
+    sysClock,
+    openShiftDayOfWeek != null ? { openShiftDayOfWeek } : {}
+  )
   const canClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes >= window.inStart && window.currentMinutes <= window.outEnd
   const canClockOut = Boolean(window) && Boolean(isClockedIn) && !isClockedOut
   const isTooEarlyToClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes < window.inStart

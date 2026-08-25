@@ -133,9 +133,12 @@ export const getPrevCutoff = (cutoff, settings = null) => {
  *   { day_of_week: number, minutes_since_midnight: number, time: "HH:MM:SS", date: "YYYY-MM-DD" }
  * Falls back to real browser time if not provided.
  */
-export const getClockWindow = (schedule, sysClock = null) => {
+export const getClockWindow = (schedule, sysClock = null, options = {}) => {
   const template = schedule?.template
   if (!template) return null
+
+  const openShiftDayOfWeek = options.openShiftDayOfWeek
+  const hasOpenShift = openShiftDayOfWeek != null && openShiftDayOfWeek !== ''
 
   const calendarDayOfWeek = sysClock != null ? sysClock.day_of_week : new Date().getDay()
   const wallMinutes = sysClock != null
@@ -184,7 +187,9 @@ export const getClockWindow = (schedule, sysClock = null) => {
 
   let resolvedDayOfWeek = calendarDayOfWeek
   let adoptedYesterdayShift = false
-  if (template.type === 'night') {
+  if (hasOpenShift) {
+    resolvedDayOfWeek = Number(openShiftDayOfWeek)
+  } else if (template.type === 'night') {
     const yesterdayDow = (calendarDayOfWeek + 6) % 7
     const yRule = ruleFor(yesterdayDow)
     const yEnabled = yRule == null || (yRule.enabled ?? true)
@@ -264,7 +269,8 @@ export const getClockWindow = (schedule, sysClock = null) => {
   if (wrapsMidnight) {
     if (outEnd < inStart) outEnd += 1440
     if (outStart < inStart) outStart += 1440
-    if (adoptedYesterdayShift && compareMinutes < inStart) compareMinutes += 1440
+    const liftTail = hasOpenShift || adoptedYesterdayShift
+    if (liftTail && compareMinutes < inStart) compareMinutes += 1440
   }
 
   return {
