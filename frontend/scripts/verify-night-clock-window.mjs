@@ -12,6 +12,7 @@ const nightSchedule = {
     clock_out_end: '06:15:00',
     day_rules: [
       { day: 2, enabled: true, clock_in: '22:00:00', clock_out: '06:00:00', grace_enabled: false },
+      { day: 3, enabled: true, clock_in: '22:00:00', clock_out: '06:00:00', grace_enabled: false },
     ],
   },
 }
@@ -45,17 +46,27 @@ function assert(cond, msg) {
 }
 
 const evening = { day_of_week: 2, minutes_since_midnight: 21 * 60 + 11, time: '21:11:00', date: '2026-08-25' }
-const postMidnight = { day_of_week: 2, minutes_since_midnight: 60, time: '01:00:00', date: '2026-08-26' }
+const postMidnight = { day_of_week: 3, minutes_since_midnight: 60, time: '01:00:00', date: '2026-08-26' }
+const wedEnd = { day_of_week: 3, minutes_since_midnight: 6 * 60, time: '06:00:00', date: '2026-08-26' }
+const wedMorning = { day_of_week: 3, minutes_since_midnight: 9 * 60, time: '09:00:00', date: '2026-08-26' }
 const tooEarly = { day_of_week: 2, minutes_since_midnight: 20 * 60, time: '20:00:00', date: '2026-08-25' }
 
 const nightEvening = getClockWindow(nightSchedule, evening)
-assert(canClockIn(nightEvening), 'night shift allows clock-in at 21:11 (early window)')
+assert(canClockIn(nightEvening), 'night shift allows clock-in at Tue 21:11 (early window)')
 
 const nightPost = getClockWindow(nightSchedule, postMidnight)
-assert(canClockIn(nightPost), 'night shift allows clock-in at 01:00 (wrapped span)')
+assert(canClockIn(nightPost), 'night shift allows clock-in at Wed 01:00 (adopt yesterday)')
+assert(nightPost.adoptedYesterdayShift === true, 'Wed 01:00 marks adoptedYesterdayShift')
+
+const nightWedEnd = getClockWindow(nightSchedule, wedEnd)
+assert(!canClockIn(nightWedEnd), 'night shift blocks clock-in at Wed 06:00 (shift ended)')
+assert(nightWedEnd.adoptedYesterdayShift !== true, 'Wed 06:00 does not adopt yesterday')
+
+const nightWedMorning = getClockWindow(nightSchedule, wedMorning)
+assert(!canClockIn(nightWedMorning), 'night shift blocks clock-in at Wed 09:00 (too early for tonight)')
 
 const nightTooEarly = getClockWindow(nightSchedule, tooEarly)
-assert(!canClockIn(nightTooEarly), 'night shift blocks clock-in at 20:00 (before early window)')
+assert(!canClockIn(nightTooEarly), 'night shift blocks clock-in at Tue 20:00 (before early window)')
 
 const dayEvening = getClockWindow(daySchedule, evening)
 assert(!canClockIn(dayEvening), 'standard 9-6 still blocks clock-in at 21:11')
