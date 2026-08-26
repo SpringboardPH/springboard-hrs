@@ -133,13 +133,15 @@ export const getPrevCutoff = (cutoff, settings = null) => {
  *   { day_of_week: number, minutes_since_midnight: number, time: "HH:MM:SS", date: "YYYY-MM-DD" }
  * Falls back to real browser time if not provided.
  */
-export const getClockWindow = (schedule, sysClock = null) => {
+export const getClockWindow = (schedule, sysClock = null, options = {}) => {
   const template = schedule?.template
   if (!template) return null
 
-  // Use system clock if available, otherwise real browser time
-  const dayOfWeek = sysClock != null ? sysClock.day_of_week : new Date().getDay()
-  const currentMinutes = sysClock != null
+  const openShiftDayOfWeek = options.openShiftDayOfWeek
+  const hasOpenShift = openShiftDayOfWeek != null && openShiftDayOfWeek !== ''
+
+  const calendarDayOfWeek = sysClock != null ? sysClock.day_of_week : new Date().getDay()
+  const wallMinutes = sysClock != null
     ? sysClock.minutes_since_midnight
     : new Date().getHours() * 60 + new Date().getMinutes()
 
@@ -150,16 +152,19 @@ export const getClockWindow = (schedule, sysClock = null) => {
   }
 
   const formatTime = (m) => {
-    const h = Math.floor(m / 60)
-    const min = m % 60
+    const normalized = ((m % 1440) + 1440) % 1440
+    const h = Math.floor(normalized / 60)
+    const min = normalized % 60
     return `${h.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`
   }
 
-  const dayRule = (template.day_rules || []).find(r => r.day === dayOfWeek)
+  const rules = template.day_rules || []
+  const ruleFor = (dow) => rules.find(r => r.day === dow)
 
   // Flexi schedule: employee can always clock in/out. On a disabled (rest) day
   // they may still choose to work — payroll pays that at the rest-day rate.
   if (template.type === 'flexi') {
+    const dayRule = ruleFor(calendarDayOfWeek)
     return {
       inStart: 0,
       inEnd: 1439,
@@ -170,7 +175,7 @@ export const getClockWindow = (schedule, sysClock = null) => {
       workStartMinutes: 0,
       workEndMinutes: 1439,
       normalInStart: 0,
-      currentMinutes,
+      currentMinutes: wallMinutes,
       isWithinInWindow: true,
       isWithinOutWindow: true,
       isFlexi: true,
@@ -180,13 +185,34 @@ export const getClockWindow = (schedule, sysClock = null) => {
     }
   }
 
+  let resolvedDayOfWeek = calendarDayOfWeek
+  let adoptedYesterdayShift = false
+  if (hasOpenShift) {
+    resolvedDayOfWeek = Number(openShiftDayOfWeek)
+  } else if (template.type === 'night') {
+    const yesterdayDow = (calendarDayOfWeek + 6) % 7
+    const yRule = ruleFor(yesterdayDow)
+    const yEnabled = yRule == null || (yRule.enabled ?? true)
+    if (yEnabled) {
+      const yIn = parse(yRule?.clock_in ?? template.work_start_time)
+      const yOut = parse(yRule?.clock_out ?? template.work_end_time)
+      if (yIn > 0 && yOut > 0 && yOut < yIn && wallMinutes < yOut) {
+        resolvedDayOfWeek = yesterdayDow
+        adoptedYesterdayShift = true
+      }
+    }
+  }
+
+  const dayRule = ruleFor(resolvedDayOfWeek)
+
   // Fixed schedule, day not assigned (disabled day_rule): not a rest day, just not
   // scheduled — clock-in is blocked. Rest-day pay for fixed only happens when HR
   // manually sets that status on a log they create/edit themselves.
   if (dayRule && !dayRule.enabled) {
     return {
       isInactiveDay: true,
-      currentMinutes,
+      currentMinutes: wallMinutes,
+      adoptedYesterdayShift,
       workStart: dayRule.clock_in?.substring(0, 5) || template.work_start_time?.substring(0, 5) || '—',
       workEnd: dayRule.clock_out?.substring(0, 5) || template.work_end_time?.substring(0, 5) || '—',
       formatTime,
@@ -231,6 +257,22 @@ export const getClockWindow = (schedule, sysClock = null) => {
     outEnd = parse(template.clock_out_end || template.work_end_time)
   }
 
+  const shiftInMinutes = workStartMinutes || inStart + 60
+  const shiftOutMinutes = workEndMinutes || outEnd
+  const wrapsMidnight =
+    template.type === 'night' &&
+    shiftInMinutes > 0 &&
+    shiftOutMinutes > 0 &&
+    shiftOutMinutes < shiftInMinutes
+
+  let compareMinutes = wallMinutes
+  if (wrapsMidnight) {
+    if (outEnd < inStart) outEnd += 1440
+    if (outStart < inStart) outStart += 1440
+    const liftTail = hasOpenShift || adoptedYesterdayShift
+    if (liftTail && compareMinutes < inStart) compareMinutes += 1440
+  }
+
   return {
     inStart,
     inEnd,
@@ -241,12 +283,22 @@ export const getClockWindow = (schedule, sysClock = null) => {
     workStartMinutes,
     workEndMinutes,
     normalInStart,
-    currentMinutes,
-    isWithinInWindow: currentMinutes >= inStart && currentMinutes <= inEnd,
-    isWithinOutWindow: currentMinutes >= outStart && currentMinutes <= outEnd,
+    currentMinutes: compareMinutes,
+    wrapsMidnight,
+    adoptedYesterdayShift,
+    isWithinInWindow: compareMinutes >= inStart && compareMinutes <= inEnd,
+    isWithinOutWindow: compareMinutes >= outStart && compareMinutes <= outEnd,
     formatTime
   }
 }
+
+export const canEmployeeClockIn = (win, { overnightClockInBlocked = false } = {}) =>
+  Boolean(win)
+  && !win.isInactiveDay
+  && !overnightClockInBlocked
+  && win.currentMinutes >= win.inStart
+  && win.currentMinutes <= win.outEnd
+
 export const calculateAttendanceStatus = (clockIn, clockOut, expectedHours, workStart, schedule = null, logDate = null) => {
   if (!clockIn) return 'absent'
   
