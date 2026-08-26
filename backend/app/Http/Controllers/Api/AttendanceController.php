@@ -1228,6 +1228,31 @@ class AttendanceController extends Controller
             $this->maybeReopenAutoClockedOutLog($record, $schedule, $dayRule, $today);
             $record?->refresh();
 
+            $yesterday = $today->copy()->subDay();
+            $ySchedule = $this->getScheduleForDate($employee->id, $yesterday);
+            $yRule = $this->getDayRuleForDate($ySchedule, $yesterday);
+            $overnightClockInBlocked = false;
+
+            if ($ySchedule?->template?->wrapsMidnight($yRule)) {
+                $nowMinutes = $this->parseTimeToMinutes(SystemClock::timeString());
+                $yShiftEnd = $this->parseTimeToMinutes($ySchedule->template->shiftEndFor($yRule));
+                $yLog = AttendanceLog::where('employee_id', $employee->id)
+                    ->whereDate('date', $yesterday->toDateString())
+                    ->whereNotNull('clock_in_time')
+                    ->first();
+
+                if ($yLog && $nowMinutes < $yShiftEnd) {
+                    $overnightClockInBlocked = true;
+                }
+
+                // Overnight: an open punch dated yesterday is still the active shift.
+                if (!$record?->clock_in_time && $yLog && !$yLog->clock_out_time) {
+                    $record = $yLog;
+                    $schedule = $ySchedule;
+                    $dayRule = $yRule;
+                }
+            }
+
             $onLeaveToday = \App\Models\LeaveRequest::where('employee_id', $employee->id)
                 ->where('status', 'approved')
                 ->whereDate('start_date', '<=', $today->toDateString())
@@ -1262,6 +1287,8 @@ class AttendanceController extends Controller
                     'clocked_out' => $record ? (bool) $record->clock_out_time : false,
                     'clock_in_time' => $record?->clock_in_time,
                     'clock_out_time' => $record?->clock_out_time,
+                    'shift_date' => $record?->date?->format('Y-m-d'),
+                    'overnight_clock_in_blocked' => $overnightClockInBlocked,
                     'on_leave' => $onLeaveToday,
                 ],
                 'message' => 'Today\'s attendance retrieved',

@@ -15,7 +15,7 @@ import { PageHeader, PageSpinner, ScheduleDisplay, ConfirmModal, AlertModal, Mod
 import GeofenceMapPreview from '../../components/GeofenceMapPreview.jsx'
 import { Clock, LogOut, AlertCircle, CalendarDays, Sparkles, MapPin } from 'lucide-react'
 import { useAuth } from '../../store/AuthContext'
-import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff } from '../../utils/attendance'
+import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff, canEmployeeClockIn } from '../../utils/attendance'
 
 // Resolve GPS coords for geo-tagging; resolves null if unsupported/denied/timeout
 // so clock-in always proceeds. ponytail: no library, browser Geolocation API only.
@@ -255,6 +255,14 @@ export default function AttendanceClockPage() {
   const isOnLeave = todayAttendance?.on_leave ?? false
   const isClockedIn = todayAttendance?.clock_in_time
   const isClockedOut = todayAttendance?.clock_out_time
+  const shiftDate = todayAttendance?.shift_date
+  const openShiftDayOfWeek = (() => {
+    if (!isClockedIn || isClockedOut || !shiftDate) return null
+    const parts = String(shiftDate).slice(0, 10).split('-').map(Number)
+    if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null
+    const [y, m, d] = parts
+    return new Date(y, m - 1, d).getDay()
+  })()
   const monthlyLogs = monthlyData?.data ?? []
   const statusCounts = monthlyLogs.reduce((acc, log) => {
     const status = log.status || 'unknown'
@@ -280,11 +288,19 @@ export default function AttendanceClockPage() {
   }
 
   // Pass sysClock to window check so it uses the virtual time
-  const window = getClockWindow(currentSchedule, sysClock)
-  const canClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes >= window.inStart && window.currentMinutes <= window.outEnd
+  const window = getClockWindow(
+    currentSchedule,
+    sysClock,
+    openShiftDayOfWeek != null ? { openShiftDayOfWeek } : {}
+  )
+  const canClockIn = canEmployeeClockIn(window, {
+    overnightClockInBlocked: Boolean(todayAttendance?.overnight_clock_in_blocked),
+  })
   const canClockOut = Boolean(window) && Boolean(isClockedIn) && !isClockedOut
   const isTooEarlyToClockIn = Boolean(window) && !window.isInactiveDay && window.currentMinutes < window.inStart
-  const isClockInWindowClosed = Boolean(window) && !window.isInactiveDay && window.currentMinutes > window.outEnd
+  const isClockInWindowClosed = Boolean(window) && !window.isInactiveDay && (
+    window.currentMinutes > window.outEnd || Boolean(todayAttendance?.overnight_clock_in_blocked)
+  )
 
   // Formatted display values — show system clock, not browser clock
   const displayDateLabel = displayTime

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { PageHeader, FormField, ConfirmModal, AlertModal, Spinner } from '../../components/ui/index.jsx'
 import GeofenceMapPreview from '../../components/GeofenceMapPreview.jsx'
-import { adminSettingsKeys, getAdminSettings, updateAdminSetting, uploadLogo, deleteLogo, uploadPayrollTemplate, getLogos, systemClockKeys, attendanceKeys, leaveKeys, employeeLeaveBalanceKeys, themeColorKeys, systemConfigKeys, geofenceConfigKeys } from '../../api/queries'
+import { adminSettingsKeys, getAdminSettings, updateAdminSetting, uploadLogo, deleteLogo, uploadPayrollTemplate, getLogos, getSystemClock, systemClockKeys, attendanceKeys, leaveKeys, employeeLeaveBalanceKeys, themeColorKeys, systemConfigKeys, geofenceConfigKeys } from '../../api/queries'
 import { Clock, Calendar, Save, RotateCcw, Zap, Palette, Monitor, Upload, Image as ImageIcon, Check, FileSpreadsheet, Trash2, FileText, MapPin, Plus, LocateFixed } from 'lucide-react'
 
 const formatDateForInput = (date) => date.toLocaleDateString('en-CA')
@@ -138,10 +138,16 @@ export default function SystemSettingsPage() {
   const [confirmConfig, setConfirmConfig] = useState({ open: false, onConfirm: () => {}, message: '', title: '', type: 'info' })
   const [alertConfig, setAlertConfig] = useState({ open: false, title: '', message: '', type: 'error' })
   const baselineRef = useRef(null)
+  const clockSeededRef = useRef(false)
 
   const { data: settings = [], isLoading } = useQuery({
     queryKey: adminSettingsKeys.all,
     queryFn: getAdminSettings,
+  })
+
+  const { data: systemClock } = useQuery({
+    queryKey: systemClockKeys.all,
+    queryFn: getSystemClock,
   })
 
   const { data: availableLogos = [] } = useQuery({
@@ -177,13 +183,26 @@ export default function SystemSettingsPage() {
   }
 
   useEffect(() => {
-    if (settings.length > 0) {
-      const v = settingsToValues(settings)
-      applyValues(v)
-      // Capture the clean baseline these values serialize to (no pending uploads).
-      baselineRef.current = snapshotOf({ ...v, hasNewLogo: false, hasNewTemplate: false })
-    }
+    if (settings.length === 0) return
+    const v = settingsToValues(settings)
+    applyValues(v)
+    baselineRef.current = snapshotOf({ ...v, hasNewLogo: false, hasNewTemplate: false })
   }, [settings]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live SystemClock advances past the stored system_time baseline; seed once.
+  useEffect(() => {
+    if (clockSeededRef.current) return
+    if (settings.length === 0) return
+    if (!systemClock?.date || !systemClock?.time) return
+    clockSeededRef.current = true
+    const next = {
+      date: systemClock.date,
+      time: normalizeTimeValue(systemClock.time),
+    }
+    setDateTime(next)
+    const v = { ...settingsToValues(settings), ...next }
+    baselineRef.current = snapshotOf({ ...v, hasNewLogo: false, hasNewTemplate: false })
+  }, [settings, systemClock])
 
   const uploadLogoMutation = useMutation({
     mutationFn: uploadLogo,
