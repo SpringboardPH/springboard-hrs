@@ -51,6 +51,7 @@ export const attendanceKeys = {
   todayAll: () => ['attendance', 'today', 'all'],  // HR/Admin all employees
   list: (params) => ['attendance', 'list', params],
   monthly: (employeeId, startDate, endDate) => ['attendance', 'monthly', employeeId, startDate, endDate],
+  exportPreview: (startDate, endDate) => ['attendance', 'export-preview', startDate, endDate],
 }
 
 export const getAttendanceToday = (params = { personal: true }) =>
