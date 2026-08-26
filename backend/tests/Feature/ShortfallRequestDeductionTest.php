@@ -11,12 +11,9 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * Half-day and undertime are pay-changing deviations, so clock-out records only the
- * factual baseline status and auto-files a request. HR's decision on that request is
- * the sole thing that turns the deduction on.
- *
- * Note the polarity is the INVERSE of overtime: approving an auto-filed shortfall
- * EXCUSES it (no deduction); rejecting it applies the deduction.
+ * Half-day and undertime are status marks only. Approving stamps the type onto
+ * the log (not completed) and payroll docks the hour shortfall. Overtime is the
+ * inverse: approval grants the premium.
  */
 class ShortfallRequestDeductionTest extends TestCase
 {
@@ -72,7 +69,7 @@ class ShortfallRequestDeductionTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_approving_an_auto_filed_shortfall_excuses_the_deduction()
+    public function test_approving_an_auto_filed_undertime_marks_and_docks_hours()
     {
         $employee = $this->makeEmployee('A');
         $log = $this->makeShortLog($employee);
@@ -80,16 +77,15 @@ class ShortfallRequestDeductionTest extends TestCase
 
         $hr = User::factory()->create(['role' => 'hr']);
         $this->actingAs($hr)
-            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Excused.'])
+            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Confirmed undertime.'])
             ->assertOk();
 
-        // Approval must NOT stamp the shortfall onto the log.
-        $this->assertEquals('completed', $log->fresh()->status);
+        $this->assertEquals('undertime', $log->fresh()->status);
 
         $this->generatePayroll();
 
         $payroll = Payroll::where('employee_id', $employee->id)->sole();
-        $this->assertEquals(0.0, (float) ($payroll->deductions['Undertime'] ?? 0));
+        $this->assertEquals(625.00, (float) ($payroll->deductions['Undertime'] ?? 0));
     }
 
     public function test_rejecting_an_auto_filed_shortfall_applies_the_deduction()
@@ -154,26 +150,41 @@ class ShortfallRequestDeductionTest extends TestCase
     }
 
     /**
-     * Auto-filed requests are settled through the log's status, so they must be excluded
-     * from the employee-initiated request adjustments — otherwise approving an auto-filed
-     * half day to EXCUSE it would instead deduct half a day's pay.
+     * Approving a half-day only marks the log. Pay is hour-based: left at 13:00
+     * against 18:00 is 300 min × (1000/8)/60 = 625 undertime, not half a daily rate.
      */
-    public function test_approved_auto_filed_half_day_does_not_add_a_half_day_deduction()
+    public function test_approved_auto_filed_half_day_docks_hours_not_half_a_day()
     {
         $employee = $this->makeEmployee('E');
-        $log = $this->makeShortLog($employee);
+        $log = $this->makeShortLog($employee, 'half_day');
         $request = $this->makeAutoFiledRequest($log, 'half_day');
 
         $hr = User::factory()->create(['role' => 'hr']);
         $this->actingAs($hr)
-            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Excused.'])
+            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Confirmed half day.'])
             ->assertOk();
+
+        $this->assertEquals('half_day', $log->fresh()->status);
 
         $this->generatePayroll();
 
         $payroll = Payroll::where('employee_id', $employee->id)->sole();
         $this->assertEquals(0.0, (float) ($payroll->deductions['Half Day'] ?? 0));
-        $this->assertEquals(0.0, (float) ($payroll->deductions['Undertime'] ?? 0));
+        $this->assertEquals(625.00, (float) ($payroll->deductions['Undertime'] ?? 0));
+    }
+
+    public function test_approving_half_day_does_not_rewrite_completed()
+    {
+        $employee = $this->makeEmployee('G');
+        $log = $this->makeShortLog($employee, 'completed');
+        $request = $this->makeAutoFiledRequest($log, 'half_day');
+
+        $hr = User::factory()->create(['role' => 'hr']);
+        $this->actingAs($hr)
+            ->patchJson("/api/requests/{$request->id}/approve", ['response_notes' => 'Confirmed half day.'])
+            ->assertOk();
+
+        $this->assertEquals('half_day', $log->fresh()->status);
     }
 
     public function test_auto_file_does_not_stack_duplicate_requests_for_the_same_log()

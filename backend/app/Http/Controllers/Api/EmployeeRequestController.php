@@ -196,11 +196,15 @@ class EmployeeRequestController extends Controller
                 }
             }
 
-            // Half-day / undertime approval EXCUSES the shortfall, so the log deliberately
-            // keeps the baseline status it got at clock-out ('late' or 'completed') and no
-            // early-departure deduction is applied. Rejection is what stamps the shortfall
-            // onto the log — see reject() below. Note this is the opposite polarity to
-            // overtime, where approval is what grants the premium.
+            // Half-day / undertime approval only marks the log. Payroll still
+            // docks the hour shortfall — do not rewrite to completed.
+            $logId = $employeeRequest->meta['attendance_log_id'] ?? null;
+            if ($logId && in_array($employeeRequest->request_type, ['half_day', 'undertime'], true)) {
+                \App\Models\AttendanceLog::where('id', $logId)
+                    ->where('employee_id', $employeeRequest->employee_id)
+                    ->whereNotIn('status', ['absent', 'on_leave', 'rest_day'])
+                    ->update(['status' => $employeeRequest->request_type]);
+            }
 
             // Loan approval: create the loan for employee-initiated cash advances
             if ($employeeRequest->request_type === 'cash_advance') {

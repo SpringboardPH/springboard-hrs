@@ -451,6 +451,7 @@ export default function AttendancePage() {
       let effective
       if (log) {
         if (log.status === 'on_leave') effective = 'on_leave'
+        else if (log.status === 'absent') effective = 'absent'
         else effective = log.clock_out_time ? (log.status || 'completed') : 'working'
       } else {
         if (win?.isInactiveDay) effective = 'not_scheduled'
@@ -658,6 +659,8 @@ export default function AttendancePage() {
                         {log ? (
                           log.status === 'on_leave' ? (
                             <StatusBadge status="on_leave" />
+                          ) : log.status === 'absent' ? (
+                            <StatusBadge status="absent" />
                           ) : log.clock_out_time ? (
                             <StatusBadge status={log.status} />
                           ) : (

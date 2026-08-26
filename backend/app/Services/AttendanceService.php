@@ -5,106 +5,202 @@ namespace App\Services;
 class AttendanceService
 {
     /**
-     * Calculate attendance status based on clocked times and grace period.
-     *
-     * @param string|null $clockIn
-     * @param string|null $clockOut
-     * @param int $expectedHours
-     * @param string $workStart
-     * @param array|null $dayRule - Optional day rule with grace period info
-     * @return string
+     * @return array{
+     *   hours_worked: float,
+     *   overtime_hours: float,
+     *   late_minutes: int,
+     *   undertime_minutes: int,
+     *   status: string
+     * }
      */
-    public static function calculateStatus(?string $clockIn, ?string $clockOut, int|float $expectedHours, string $workStart, ?array $dayRule = null): string
-    {
+    public static function evaluateFixed(
+        ?string $clockIn,
+        ?string $clockOut,
+        int|float $expectedHours,
+        string $workStart,
+        ?array $dayRule = null,
+        ?string $workEnd = null
+    ): array {
+        $empty = [
+            'hours_worked' => 0.0,
+            'overtime_hours' => 0.0,
+            'late_minutes' => 0,
+            'undertime_minutes' => 0,
+        ];
+
         if (!$clockIn) {
-            return 'absent';
+            return $empty + ['status' => 'absent'];
+        }
+        if (!$clockOut) {
+            return $empty + ['status' => 'working'];
         }
 
-        $inMinutes = self::parseTimeToMinutes($clockIn);
-        $startMinutes = self::parseTimeToMinutes($workStart);
+        $inMin = self::parseTimeToMinutes($clockIn);
+        $outMin = self::parseTimeToMinutes($clockOut);
+        $startMin = self::parseTimeToMinutes($workStart);
 
-        // Overnight shift: an "early" arrival more than 12h before the shift start
-        // can only mean it is actually the next calendar day (e.g. 22:00 shift start,
-        // 00:30 clock-in). Normalise before computing lateness/duration.
-        if ($startMinutes - $inMinutes > 720) {
-            $inMinutes += 1440;
+        if ($startMin - $inMin > 720) {
+            $inMin += 1440;
         }
 
-        // Treat early clock-in within the hour as "normal" start for duration/OT
-        $effectiveInMin = $inMinutes;
-        if ($inMinutes < $startMinutes && $inMinutes >= ($startMinutes - 60)) {
-            $effectiveInMin = $startMinutes;
+        $effectiveInMin = $inMin;
+        if ($inMin < $startMin && $inMin >= ($startMin - 60)) {
+            $effectiveInMin = $startMin;
         }
 
-        $outMinutes = $clockOut ? self::parseTimeToMinutes($clockOut) : $inMinutes;
-
-        // Handle overnight shifts if necessary
-        if ($outMinutes < $inMinutes) {
-            $outMinutes += 1440;
+        if ($outMin < $inMin) {
+            $outMin += 1440;
         }
 
-        $lateMinutes = max(0, $inMinutes - $startMinutes);
-        $expectedMinutes = $expectedHours * 60;
-        $undertimeMinutes = max(0, $expectedMinutes - ($outMinutes - $effectiveInMin));
+        $endMin = $workEnd
+            ? self::parseTimeToMinutes($workEnd)
+            : $startMin + (int) round($expectedHours * 60);
+        if ($endMin <= $startMin) {
+            $endMin += 1440;
+        }
 
-        // Check if grace period covers the deviation
-        $graceCovered = false;
-        if ($dayRule && isset($dayRule['grace_enabled']) && $dayRule['grace_enabled']) {
-            $graceMinutes = (int)($dayRule['grace_minutes'] ?? 0);
-            $graceType = $dayRule['grace_type'] ?? '-/+';
-            
-            // Check if this deviation is covered by grace
-            if ($lateMinutes <= $graceMinutes && ($graceType === '+' || $graceType === '-/+')) {
-                $graceCovered = true;
-            } elseif ($undertimeMinutes <= $graceMinutes && ($graceType === '-' || $graceType === '-/+')) {
-                $graceCovered = true;
+        $grace = self::graceParts($dayRule);
+        $regularCap = $endMin + $grace['plus'];
+        $regularOut = min($outMin, $regularCap);
+        $overtimeHours = round(max(0, $outMin - $regularCap) / 60, 1);
+
+        $regularMinutes = max(0, $regularOut - $effectiveInMin);
+        $hoursWorked = $regularMinutes / 60;
+        $expectedMinutes = (int) round($expectedHours * 60);
+        $shortfallMinutes = max(0, $expectedMinutes - $regularMinutes);
+
+        $lateArrival = max(0, $inMin - $startMin);
+        $arrivalPastGrace = $lateArrival > $grace['plus'];
+        $arrivalDock = $arrivalPastGrace ? $lateArrival : 0;
+
+        if (!$arrivalPastGrace) {
+            $shortfallMinutes = max(0, $expectedMinutes - max(0, $regularOut - $startMin));
+        }
+
+        if ($hoursWorked <= ($expectedHours / 2) && $expectedHours > 0) {
+            $status = 'half_day';
+        } elseif ($shortfallMinutes > 0) {
+            if ($grace['minus'] > 0 && $shortfallMinutes <= $grace['minus']) {
+                $status = 'late';
+            } else {
+                $status = 'undertime';
             }
+        } elseif ($arrivalPastGrace) {
+            $status = 'late';
+        } else {
+            $status = 'completed';
         }
 
-        // If grace covers the deviation, return completed
-        if ($graceCovered) {
-            return 'completed';
+        $lateMinutes = $arrivalDock;
+        if ($status === 'late' && $shortfallMinutes > 0 && $lateMinutes === 0) {
+            $lateMinutes = $shortfallMinutes;
         }
 
-        // 'overtime', 'half_day' and 'undertime' are NOT set here. They are deviations
-        // that change pay, so they require HR sign-off: clock-out records only the
-        // factual baseline and auto-files an EmployeeRequest (see classifyDeviation()
-        // and EmployeeRequest::autoFile()). The request-approval flow is the only
-        // thing that writes those statuses onto a log.
-        return $lateMinutes > 0 ? 'late' : 'completed';
+        $undertimeMinutes = ($status === 'undertime' || $status === 'half_day')
+            ? max(0, $shortfallMinutes - $arrivalDock)
+            : 0;
+
+        return [
+            'hours_worked' => $hoursWorked,
+            'overtime_hours' => $overtimeHours,
+            'late_minutes' => $lateMinutes,
+            'undertime_minutes' => $undertimeMinutes,
+            'status' => $status,
+        ];
     }
 
     /**
-     * Classify how a completed shift deviated from its expected hours. Returns the
-     * EmployeeRequest type that should be auto-filed, or null when the shift met
-     * expectations and nothing needs HR's attention.
+     * @return array{
+     *   hours_worked: float,
+     *   overtime_hours: float,
+     *   late_minutes: int,
+     *   undertime_minutes: int,
+     *   status: string
+     * }
      */
-    public static function classifyDeviation(float $hoursWorked, int|float $expectedHours): ?string
+    public static function evaluateFlexi(?string $clockIn, ?string $clockOut, int $requiredHours): array
     {
+        $empty = [
+            'hours_worked' => 0.0,
+            'overtime_hours' => 0.0,
+            'late_minutes' => 0,
+            'undertime_minutes' => 0,
+        ];
+
+        if (!$clockIn) {
+            return $empty + ['status' => 'absent'];
+        }
+        if (!$clockOut) {
+            return $empty + ['status' => 'working'];
+        }
+
+        $inMin = self::parseTimeToMinutes($clockIn);
+        $outMin = self::parseTimeToMinutes($clockOut);
+        if ($outMin < $inMin) {
+            $outMin += 1440;
+        }
+
+        $minutesWorked = $outMin - $inMin;
+        $hoursWorked = $minutesWorked / 60;
+        $overtimeHours = round(max(0, $hoursWorked - $requiredHours), 1);
+        $undertimeMin = max(0, ($requiredHours * 60) - $minutesWorked);
+
+        if ($requiredHours > 0 && $hoursWorked <= ($requiredHours / 2)) {
+            $status = 'half_day';
+        } elseif ($hoursWorked < $requiredHours) {
+            $status = 'undertime';
+        } else {
+            $status = 'completed';
+        }
+
+        return [
+            'hours_worked' => $hoursWorked,
+            'overtime_hours' => $overtimeHours,
+            'late_minutes' => 0,
+            'undertime_minutes' => in_array($status, ['undertime', 'half_day'], true) ? $undertimeMin : 0,
+            'status' => $status,
+        ];
+    }
+
+    public static function calculateStatus(
+        ?string $clockIn,
+        ?string $clockOut,
+        int|float $expectedHours,
+        string $workStart,
+        ?array $dayRule = null,
+        ?string $workEnd = null
+    ): string {
+        return self::evaluateFixed($clockIn, $clockOut, $expectedHours, $workStart, $dayRule, $workEnd)['status'];
+    }
+
+    public static function classifyDeviation(
+        float $hoursWorked,
+        int|float $expectedHours,
+        float $overtimeHours = 0.0,
+        ?string $status = null
+    ): ?string {
+        if ($overtimeHours > 0) {
+            return 'overtime';
+        }
+        if ($status === 'half_day' || $status === 'undertime') {
+            return $status;
+        }
         if ($expectedHours <= 0) {
             return null;
         }
-
         if ($hoursWorked > $expectedHours) {
             return 'overtime';
         }
-
-        if ($hoursWorked < ($expectedHours / 2)) {
-            return 'undertime';
-        }
-
-        if ($hoursWorked < $expectedHours) {
+        if ($hoursWorked <= ($expectedHours / 2)) {
             return 'half_day';
+        }
+        if ($hoursWorked < $expectedHours) {
+            return 'undertime';
         }
 
         return null;
     }
 
-    /**
-     * Calculate the number of hours the clocked interval overlaps the nightly
-     * 22:00-06:00 night differential window (DOLE Art. 86). Based purely on the
-     * actual clock-in/clock-out times, never the schedule.
-     */
     public static function calculateNightHours(?string $clockIn, ?string $clockOut): float
     {
         if (!$clockIn || !$clockOut) {
@@ -113,7 +209,9 @@ class AttendanceService
 
         $inMin = self::parseTimeToMinutes($clockIn);
         $outMin = self::parseTimeToMinutes($clockOut);
-        if ($outMin < $inMin) $outMin += 1440;
+        if ($outMin < $inMin) {
+            $outMin += 1440;
+        }
 
         $overlap = function (int $a, int $b, int $c, int $d): float {
             return max(0, min($b, $d) - max($a, $c));
@@ -127,12 +225,6 @@ class AttendanceService
         return $minutes / 60;
     }
 
-    /**
-     * Shift a time string backward by the given number of hours, wrapping across
-     * midnight (e.g. '06:00:00' shifted back 2h -> '04:00:00'; '01:00:00' shifted
-     * back 2h -> '23:00:00'). Used to locate the start of the chronological OT
-     * tail relative to clock-out.
-     */
     public static function shiftTimeBy(string $time, float $hoursBefore): string
     {
         $minutes = self::parseTimeToMinutes($time) - ($hoursBefore * 60);
@@ -141,116 +233,47 @@ class AttendanceService
         return sprintf('%02d:%02d:00', intdiv($normalized, 60), $normalized % 60);
     }
 
-    /**
-     * Parse time string to minutes.
-     */
     public static function parseTimeToMinutes(string $time): int
     {
         [$hour, $minute] = array_map('intval', explode(':', substr($time, 0, 5)));
         return $hour * 60 + $minute;
     }
 
-    /**
-     * Calculate attendance status for flexi schedules (no fixed start/end time).
-     * Status is purely based on hours worked vs required hours.
-     */
     public static function calculateFlexiStatus(?string $clockIn, ?string $clockOut, int $requiredHours): string
     {
-        if (!$clockIn) return 'absent';
-        if (!$clockOut) return 'working';
-
-        // Flexi has no scheduled start, so there is no lateness — 'completed' is the
-        // only baseline. Like the fixed path, overtime/half_day/undertime are pay-
-        // changing deviations written by the request-approval flow, not here.
-        // $requiredHours is kept in the signature for callers; classifyDeviation()
-        // is what turns it into a request type.
-        return 'completed';
+        return self::evaluateFlexi($clockIn, $clockOut, $requiredHours)['status'];
     }
 
-    /**
-     * Calculate detailed metrics for payroll on flexi schedules (no fixed start/end time).
-     */
     public static function calculateFlexiDetails(?string $clockIn, ?string $clockOut, int $requiredHours): array
     {
-        if (!$clockIn || !$clockOut) {
-            return [
-                'hours_worked'      => 0,
-                'overtime_hours'    => 0,
-                'late_minutes'      => 0,
-                'undertime_minutes' => 0,
-                'status'            => $clockIn ? 'working' : 'absent'
-            ];
-        }
+        return self::evaluateFlexi($clockIn, $clockOut, $requiredHours);
+    }
 
-        $inMin  = self::parseTimeToMinutes($clockIn);
-        $outMin = self::parseTimeToMinutes($clockOut);
-        if ($outMin < $inMin) $outMin += 1440;
-
-        $minutesWorked = $outMin - $inMin;
-        $hoursWorked   = $minutesWorked / 60;
-        // ponytail: OT billed to the nearest 0.1h (6 min) — matches how it's displayed
-        // and paid, so hours * rate always reconciles on the payslip.
-        $overtimeHours = round(max(0, $hoursWorked - $requiredHours), 2);
-        $undertimeMin  = max(0, ($requiredHours * 60) - $minutesWorked);
-
-        return [
-            'hours_worked'      => $hoursWorked,
-            'overtime_hours'    => $overtimeHours,
-            'late_minutes'      => 0,
-            'undertime_minutes' => $undertimeMin,
-            'status'            => self::calculateFlexiStatus($clockIn, $clockOut, $requiredHours)
-        ];
+    public static function calculateDetails(
+        ?string $clockIn,
+        ?string $clockOut,
+        int|float $expectedHours,
+        string $workStart,
+        ?array $dayRule = null,
+        ?string $workEnd = null
+    ): array {
+        return self::evaluateFixed($clockIn, $clockOut, $expectedHours, $workStart, $dayRule, $workEnd);
     }
 
     /**
-     * Calculate detailed metrics for payroll.
+     * @return array{plus: int, minus: int}
      */
-    public static function calculateDetails(?string $clockIn, ?string $clockOut, int $expectedHours, string $workStart): array
+    private static function graceParts(?array $dayRule): array
     {
-        if (!$clockIn || !$clockOut) {
-            return [
-                'hours_worked' => 0,
-                'overtime_hours' => 0,
-                'late_minutes' => 0,
-                'undertime_minutes' => 0,
-                'status' => $clockIn ? 'working' : 'absent'
-            ];
+        if (!$dayRule || empty($dayRule['grace_enabled'])) {
+            return ['plus' => 0, 'minus' => 0];
         }
 
-        $inMin = self::parseTimeToMinutes($clockIn);
-        $outMin = self::parseTimeToMinutes($clockOut);
-        $startMin = self::parseTimeToMinutes($workStart);
+        $minutes = (int) ($dayRule['grace_minutes'] ?? 0);
+        $type = $dayRule['grace_type'] ?? '-/+';
+        $plus = ($type === '+' || $type === '-/+') ? $minutes : 0;
+        $minus = ($type === '-' || $type === '-/+') ? $minutes : 0;
 
-        // Overnight shift: an "early" arrival more than 12h before the shift start
-        // can only mean it is actually the next calendar day (e.g. 22:00 shift start,
-        // 00:30 clock-in). Normalise before computing lateness/duration.
-        if ($startMin - $inMin > 720) {
-            $inMin += 1440;
-        }
-
-        // Treat early clock-in within the hour as "normal" start for duration/OT
-        $effectiveInMin = $inMin;
-        if ($inMin < $startMin && $inMin >= ($startMin - 60)) {
-            $effectiveInMin = $startMin;
-        }
-
-        if ($outMin < $inMin) $outMin += 1440;
-
-        $minutesWorked = max(0, $outMin - $effectiveInMin);
-        $hoursWorked = $minutesWorked / 60;
-        $lateMin = max(0, $inMin - $startMin);
-        
-        // ponytail: nearest 0.1h — see calculateFlexiDetails()
-        $overtimeHours = round(max(0, $hoursWorked - $expectedHours), 2);
-        $expectedMinutes = $expectedHours * 60;
-        $undertimeMin = max(0, $expectedMinutes - $minutesWorked);
-
-        return [
-            'hours_worked' => $hoursWorked,
-            'overtime_hours' => $overtimeHours,
-            'late_minutes' => $lateMin,
-            'undertime_minutes' => $undertimeMin,
-            'status' => self::calculateStatus($clockIn, $clockOut, $expectedHours, $workStart)
-        ];
+        return ['plus' => $plus, 'minus' => $minus];
     }
 }

@@ -27,12 +27,9 @@ class PayrollController extends Controller
     /**
      * Close out any half_day / undertime request still pending when payroll runs.
      *
-     * Approving one of these excuses the shortfall, so a request left pending forever
-     * would be a permanent free pass — pending and approved both suppress the
-     * deduction. Generating payroll is the deadline: anything HR has not excused by
-     * now is treated as not excused, which stamps the shortfall onto the log so the
-     * deduction applies. HR has the whole cutoff to act, and reverting the payroll to
-     * draft does not un-reject these — that is a deliberate manual decision.
+     * These statuses are marks only; pay follows hours. A request left pending
+     * still needs the log stamped so the hour shortfall docks. Generating payroll
+     * is the deadline. Reverting payroll to draft does not un-reject these.
      */
     private function resolvePendingShortfallRequests(int $employeeId, string $start, string $end): void
     {
@@ -209,7 +206,6 @@ class PayrollController extends Controller
                 'rest_day_pay' => 0,
                 'rest_day_ot_hours' => 0,
                 'absent_days' => 0,
-                'half_days' => 0,
                 'paid_leave_days' => 0,
                 'night_hours_regular' => 0,      // x1.00
                 'night_hours_ot' => 0,           // x1.25
@@ -310,10 +306,6 @@ class PayrollController extends Controller
                     }
                 }
 
-                if ($log->status === 'half_day') {
-                    $metrics['half_days']++;
-                }
-
                 if ($isFlexiSchedule) {
                     $expectedHours = $logTemplate?->required_hours_per_day ?? 8;
                     $details = AttendanceService::calculateFlexiDetails(
@@ -322,11 +314,9 @@ class PayrollController extends Controller
                         $expectedHours
                     );
                     // Flexi has no fixed end time — undertime is purely hours-based.
-                    // half_day status is handled via $metrics['half_days'], not undertime
-                    // minutes. 'late' is a baseline status that only docks late minutes
-                    // (below) — the shortfall itself is only deducted once a rejected
-                    // half_day/undertime request stamps 'undertime' onto the log.
-                    $earlyDepartureMin = in_array($log->status, ['completed', 'late', 'overtime', 'half_day'])
+                    // half_day / undertime are labels only; the hour shortfall still docks.
+                    // 'late' only docks late minutes (below).
+                    $earlyDepartureMin = in_array($log->status, ['completed', 'late', 'overtime'])
                         ? 0
                         : $details['undertime_minutes'];
                 } else {
@@ -362,14 +352,15 @@ class PayrollController extends Controller
                         $log->clock_in_time,
                         $log->clock_out_time,
                         $expectedHours,
-                        $workStart
+                        $workStart,
+                        $dayRule,
+                        $workEnd
                     );
 
                     $earlyDepartureMin = 0;
-                    // half_day status is handled via $metrics['half_days'], not undertime
-                    // minutes. 'late' only docks late minutes (below) — see the flexi
-                    // branch above for why the shortfall needs a rejected request first.
-                    if (!in_array($log->status, ['completed', 'late', 'overtime', 'half_day'])) {
+                    // half_day / undertime are labels only — hours still dock as early departure.
+                    // 'late' only docks late minutes (below).
+                    if (!in_array($log->status, ['completed', 'late', 'overtime'])) {
                         $clockOutMin = $log->clock_out_time
                             ? $this->parseTimeToMinutes($log->clock_out_time)
                             : $this->parseTimeToMinutes($workEnd);
@@ -432,14 +423,12 @@ class PayrollController extends Controller
                         : 0;
                     $metrics['rest_day_ot_hours'] += $overtimeHours;
                 } else {
-                    $metrics['total_hours'] += $details['hours_worked'];
+                    $creditedHours = in_array($log->status, ['completed', 'overtime'], true)
+                        ? $expectedHours
+                        : $details['hours_worked'];
+                    $metrics['total_hours'] += $creditedHours;
                     $metrics['overtime_hours'] += $overtimeHours;
-                    // Only a day with actual logged hours is a PAID worked day. An open punch
-                    // (clocked in, never clocked out) or a zero-duration log has no hours, so it
-                    // must not inflate days_worked / base pay. This is what over-counts flexi
-                    // employees on an all-days-enabled template, where a stray weekend punch is
-                    // not a rest day but still shouldn't be paid a full day.
-                    if ($details['hours_worked'] > 0) {
+                    if ($details['hours_worked'] > 0 || in_array($log->status, ['completed', 'overtime'], true)) {
                         $daysWorkedCount++;
                         $countedWorkDates[$dateStr] = true;
                     }
@@ -500,9 +489,8 @@ class PayrollController extends Controller
             // filed ahead of time ("I need to leave at 3pm Friday") and have no attendance
             // log to read the deviation from. Auto-filed requests are the opposite — they
             // are raised FROM a log, and their decision is already recorded as that log's
-            // status, so counting them here would double-deduct. Worse, for half_day it
-            // would invert the polarity: approving to EXCUSE a shortfall would deduct half
-            // a day at the line below.
+            // status, so counting them here would double-deduct (a half_day log already
+            // docks its hour shortfall as undertime).
             $approvedRequests = \App\Models\EmployeeRequest::where('employee_id', $employee->id)
                 ->whereIn('request_type', ['overtime', 'half_day', 'undertime'])
                 ->where('status', 'approved')
@@ -595,7 +583,9 @@ class PayrollController extends Controller
             $lateDeduction = ($metrics['late_minutes'] / 60) * $hourlyRate;
             $undertimeDeduction = $metrics['undertime_deduction'] + (($requestUndertimeMinutes / 60) * $hourlyRate);
             $absentDeduction = $metrics['absent_days'] * $dailyRate;
-            $halfDayDeduction = $metrics['half_days'] * ($dailyRate / 2) + $requestHalfDayDeduction;
+            // Attendance half-day is a status mark; hours already dock via undertime.
+            // Only employee-filed half-day requests with no log still use this lump.
+            $halfDayDeduction = $requestHalfDayDeduction;
 
             // Gov't mandatory contributions — applied every cutoff
             // (HR deducts these on every payslip, not just end-of-month)
