@@ -213,6 +213,12 @@ class PayrollController extends Controller
                 'night_hours_rest_ot' => 0,      // x1.69
             ];
 
+            $snwhWeekdayEquivalent = 0.0;
+            $snwhWeekdayOtHours = 0.0;
+            $snwhRestEquivalent = 0.0;
+            $snwhRestOtHours = 0.0;
+            $snwhRestDates = [];
+
             // Fetch approved leaves covering this cutoff — used to classify absent logs
             $approvedLeaves = \App\Models\LeaveRequest::with('leaveType')
                 ->where('employee_id', $employee->id)
@@ -236,6 +242,7 @@ class PayrollController extends Controller
                 $dateStr = Carbon::parse($log->date)->format('Y-m-d');
                 $date = Carbon::parse($log->date);
                 $event = $events->get($dateStr);
+                $isSnwh = \App\Services\PayrollService::isSpecialNonWorkingHoliday($event?->type?->name);
 
                 $schedule = EmployeeSchedule::getForEmployeeOnDate($employee->id, $date);
                 $logTemplate = $schedule?->template;
@@ -422,6 +429,13 @@ class PayrollController extends Controller
                         ? ($restRegularHours / $expectedHours) * $dailyRate * 1.30
                         : 0;
                     $metrics['rest_day_ot_hours'] += $overtimeHours;
+                    if ($isSnwh) {
+                        $snwhRestEquivalent += $expectedHours > 0
+                            ? ($restRegularHours / $expectedHours) * $dailyRate
+                            : 0;
+                        $snwhRestOtHours += $overtimeHours;
+                        $snwhRestDates[$dateStr] = true;
+                    }
                 } else {
                     $creditedHours = in_array($log->status, ['completed', 'overtime'], true)
                         ? $expectedHours
@@ -431,6 +445,12 @@ class PayrollController extends Controller
                     if ($details['hours_worked'] > 0 || in_array($log->status, ['completed', 'overtime'], true)) {
                         $daysWorkedCount++;
                         $countedWorkDates[$dateStr] = true;
+                    }
+                    if ($isSnwh && ($creditedHours > 0 || $overtimeHours > 0)) {
+                        $snwhWeekdayEquivalent += $expectedHours > 0
+                            ? ($creditedHours / $expectedHours) * $dailyRate
+                            : 0;
+                        $snwhWeekdayOtHours += $overtimeHours;
                     }
                 }
 
@@ -471,6 +491,9 @@ class PayrollController extends Controller
 
             foreach ($events as $dateStr => $event) {
                 if ($event->type && !$event->type->counts_as_absence) {
+                    if (\App\Services\PayrollService::isSpecialNonWorkingHoliday($event->type->name)) {
+                        continue;
+                    }
                     $holidayDate = Carbon::parse($dateStr);
                     if (in_array($holidayDate->dayOfWeek, $workDays) && !isset($countedWorkDates[$dateStr])) {
                         $daysWorkedCount++;
@@ -516,6 +539,14 @@ class PayrollController extends Controller
                         // Add only the delta beyond what attendance already captured
                         $additionalOtHours = round(max(0, $reqOtHours - $attendOtHours), 1);
                         $requestOvertimePay += $additionalOtHours * ($dailyRate * 1.25 / 8);
+                        $reqEvent = $events->get($reqDate);
+                        if ($additionalOtHours > 0 && \App\Services\PayrollService::isSpecialNonWorkingHoliday($reqEvent?->type?->name)) {
+                            if (isset($snwhRestDates[$reqDate])) {
+                                $snwhRestOtHours += $additionalOtHours;
+                            } else {
+                                $snwhWeekdayOtHours += $additionalOtHours;
+                            }
+                        }
                     }
                 }
 
@@ -563,6 +594,13 @@ class PayrollController extends Controller
             $overtimePay = $metrics['overtime_hours'] * ($dailyRate * 1.25 / 8) + $requestOvertimePay;
             $restDayPay = $metrics['rest_day_pay'];
             $restDayOTPay = $metrics['rest_day_ot_hours'] * ($dailyRate * 1.69 / 8);
+            $specialHolidayPay = \App\Services\PayrollService::specialHolidayPremium(
+                $dailyRate,
+                $snwhWeekdayEquivalent,
+                $snwhWeekdayOtHours,
+                $snwhRestEquivalent,
+                $snwhRestOtHours,
+            );
             // TEMPORARILY DISABLED — night differential figures were wrong; re-enable
             // by restoring the calculation below once the underlying issue is fixed.
             // $nightDiffPay =
@@ -595,13 +633,13 @@ class PayrollController extends Controller
             $philhealth = \App\Services\PayrollService::calculatePhilHealth($contributionBasis, $periods);
             $pagibig = \App\Services\PayrollService::calculatePagIBIG($contributionBasis, $periods);
 
-            $totalAllowances = $overtimePay + $restDayPay + $restDayOTPay + $undeclaredAllowance + $leavePay + $nightDiffPay;
+            $totalAllowances = $overtimePay + $restDayPay + $restDayOTPay + $undeclaredAllowance + $leavePay + $nightDiffPay + $specialHolidayPay;
             $finalGross = $grossBase + $totalAllowances;
 
             // Withholding Tax Calculation
             // Taxable base excludes undeclared allowance (off-the-books, not subject to BIR withholding)
             // Night differential IS taxable compensation, so it belongs in the tax base.
-            $taxableBase = $grossBase + $overtimePay + $restDayPay + $restDayOTPay + $leavePay + $nightDiffPay;
+            $taxableBase = $grossBase + $overtimePay + $restDayPay + $restDayOTPay + $leavePay + $nightDiffPay + $specialHolidayPay;
             $earnedTaxableBase = $taxableBase - ($lateDeduction + $undertimeDeduction + $absentDeduction + $halfDayDeduction);
             $taxableIncome = $earnedTaxableBase - ($sss + $philhealth + $pagibig);
             $wTax = \App\Services\PayrollService::calculateWithholdingTax($taxableIncome, $frequency);
@@ -628,6 +666,7 @@ class PayrollController extends Controller
                         ['label' => 'Overtime Pay', 'amount' => round($overtimePay, 2)],
                         ['label' => 'Rest Day Pay', 'amount' => round($restDayPay, 2)],
                         ['label' => 'Rest Day OT Pay', 'amount' => round($restDayOTPay, 2)],
+                        ['label' => 'Special Holiday', 'amount' => round($specialHolidayPay, 2)],
                         ['label' => 'Allowance', 'amount' => round($undeclaredAllowance, 2)],
                         ['label' => 'Leave Pay', 'amount' => round($leavePay, 2)],
                         ['label' => 'Night Differential (' . round($totalNightHours, 2) . ' hrs)', 'amount' => round($nightDiffPay, 2)],

@@ -650,7 +650,7 @@ export default function PayrollPage() {
         const nightDiffHours = nightDiffAmount > 0 && hRate > 0 ? nightDiffAmount / (hRate * 0.10) : 0
 
         const specialHolidayAmount = getEarningsAmount('Special Holiday')
-        const specialHolidayHours = specialHolidayAmount > 0 && hRate > 0 ? specialHolidayAmount / (hRate * 0.30) : 0
+        const specialHolidayHoursLabel = specialHolidayAmount > 0 ? '—' : '0h'
 
         const legalHolidayAmount = getEarningsAmount('Legal Holiday')
         const legalHolidayHours = legalHolidayAmount > 0 && hRate > 0 ? legalHolidayAmount / (hRate * 1.00) : 0
@@ -680,7 +680,7 @@ export default function PayrollPage() {
           'F29': restDayPayHours ? `${Number(restDayPayHours).toFixed(2)}h` : '0h',
           'F30': restDayOTPayHours ? `${Number(restDayOTPayHours).toFixed(2)}h` : '0h',
           'F31': nightDiffHours ? `${Number(nightDiffHours).toFixed(2)}h` : '0h',
-          'F32': specialHolidayHours ? `${Number(specialHolidayHours).toFixed(2)}h` : '0h',
+          'F32': specialHolidayHoursLabel,
           'F33': legalHolidayHours ? `${Number(legalHolidayHours).toFixed(2)}h` : '0h',
           'G27': Number(basicIncomeAmount) || 0,
           'G28': Number(overtimeAmount) || 0,
@@ -804,7 +804,7 @@ export default function PayrollPage() {
       'F29': rdPay > 0 && hRate > 0 ? `${(rdPay / (hRate * 1.30)).toFixed(2)}h` : '0h',
       'F30': rdOTPay > 0 && hRate > 0 ? `${(rdOTPay / (hRate * 1.69)).toFixed(2)}h` : '0h',
       'F31': nightDiff > 0 && hRate > 0 ? `${(nightDiff / (hRate * 0.10)).toFixed(2)}h` : '0h',
-      'F32': specialHol > 0 && hRate > 0 ? `${(specialHol / (hRate * 0.30)).toFixed(2)}h` : '0h',
+      'F32': specialHol > 0 ? '—' : '0h',
       'F33': legalHol > 0 && hRate > 0 ? `${(legalHol / (hRate * 1.00)).toFixed(2)}h` : '0h',
       'G27': Number(basicIncome) || 0,
       'G28': Number(otPay) || 0,
@@ -1476,7 +1476,6 @@ export default function PayrollPage() {
                           <span className="text-blue-700 capitalize">
                             {(item.label || '').replace('_', ' ')}
                             {item.label === 'Night Differential' && ` (${(item.amount / ((Number(selectedPayroll.daily_rate) / 8) * 0.10) || 0).toFixed(1)}h)`}
-                            {item.label === 'Special Holiday' && ` (${(item.amount / ((Number(selectedPayroll.daily_rate) / 8) * 0.30) || 0).toFixed(1)}h)`}
                             {item.label === 'Legal Holiday' && ` (${(item.amount / ((Number(selectedPayroll.daily_rate) / 8) * 1.00) || 0).toFixed(1)}h)`}
                           </span>
                           <span className="font-semibold text-blue-800">+₱{Number(item.amount).toLocaleString()}</span>
@@ -1707,9 +1706,6 @@ export default function PayrollPage() {
                           } else if (a.label === 'Night Differential') {
                             const ndHours = a.amount / (hRate * 0.10);
                             formula = `${ndHours.toFixed(2)}h × ₱${hRate.toFixed(2)} × 0.10`;
-                          } else if (a.label === 'Special Holiday') {
-                            const shHours = a.amount / (hRate * 0.30);
-                            formula = `${shHours.toFixed(2)}h × ₱${hRate.toFixed(2)} × 0.30`;
                           } else if (a.label === 'Legal Holiday') {
                             const lhHours = a.amount / (hRate * 1.00);
                             formula = `${lhHours.toFixed(2)}h × ₱${hRate.toFixed(2)} × 1.00`;

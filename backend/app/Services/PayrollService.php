@@ -194,4 +194,38 @@ class PayrollService
         ];
         return $fallback[$frequency] ?? $fallback['semi_monthly'];
     }
+
+    public const SNWH_WEEKDAY_REGULAR_EXTRA = 1.30 - 1.00;
+    public const SNWH_WEEKDAY_OT_EXTRA = 1.69 - 1.25;
+    public const SNWH_REST_REGULAR_EXTRA = 1.50 - 1.30;
+    public const SNWH_REST_OT_EXTRA = 1.95 - 1.69;
+
+    public static function isSpecialNonWorkingHoliday(?string $typeName): bool
+    {
+        if ($typeName === null || $typeName === '') {
+            return false;
+        }
+
+        $name = mb_strtolower(trim($typeName));
+
+        return str_contains($name, 'special') && str_contains($name, 'non-working');
+    }
+
+    public static function specialHolidayPremium(
+        float $dailyRate,
+        float $weekdayRegularEquivalent,
+        float $weekdayOtHours,
+        float $restRegularEquivalent,
+        float $restOtHours,
+    ): float {
+        $hourly = $dailyRate / 8;
+
+        return round(
+            $weekdayRegularEquivalent * self::SNWH_WEEKDAY_REGULAR_EXTRA
+            + $weekdayOtHours * $hourly * self::SNWH_WEEKDAY_OT_EXTRA
+            + $restRegularEquivalent * self::SNWH_REST_REGULAR_EXTRA
+            + $restOtHours * $hourly * self::SNWH_REST_OT_EXTRA,
+            2
+        );
+    }
 }
