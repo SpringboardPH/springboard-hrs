@@ -8,8 +8,9 @@ import {
   getSystemClock, systemClockKeys
 } from '../../api/queries'
 import { PageHeader, PageSpinner, StatusBadge, ConfirmModal, Modal, FormField, AlertModal } from '../../components/ui/index.jsx'
-import { Pencil, Trash2, AlertCircle, MapPin } from 'lucide-react'
+import { Pencil, Trash2, AlertCircle, MapPin, FileDown } from 'lucide-react'
 import { calculateHoursWorked } from '../../utils/timeHelpers'
+import AttendanceExportModal from '../../components/attendance/AttendanceExportModal'
 import { calculateAttendanceStatus, getCutoffPeriod, getNextCutoff, getPrevCutoff, applyAttendanceStatusToForm } from '../../utils/attendance'
 
 export default function AdminAttendanceLogsPage() {
@@ -40,6 +41,7 @@ export default function AdminAttendanceLogsPage() {
     onConfirm: () => {},
   })
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
   const [createForm, setCreateForm] = useState({
     employee_id: '',
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -356,6 +358,9 @@ export default function AdminAttendanceLogsPage() {
             'Filter logs by employee name/email, attendance status, specific date, and employee group.',
             'All filters can be combined to narrow results.',
           ]},
+          { heading: 'Export', items: [
+            'Export opens a configuration dialog for date range, departments, groups, employee status, attendance statuses, and sheet layout. It does not use the table filters on this page.',
+          ]},
           { heading: 'Adding a Log', items: [
             'Click the Add Log button (top-right of the filters card) to manually create an attendance record.',
             'Specify the employee, date, clock-in/out times, status, and notes.',
@@ -428,12 +433,23 @@ export default function AdminAttendanceLogsPage() {
       <div className="card p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-gray-700">Attendance Logs</h3>
-          <button
-            onClick={() => setCreateModalOpen(true)}
-            className="btn-primary text-sm"
-          >
-            Add Log
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary text-sm"
+              title="Export to Excel"
+              onClick={() => setExportModalOpen(true)}
+            >
+              <FileDown size={16} />
+              Export
+            </button>
+            <button
+              onClick={() => setCreateModalOpen(true)}
+              className="btn-primary text-sm"
+            >
+              Add Log
+            </button>
+          </div>
         </div>
         {isLoading ? (
           <PageSpinner />
@@ -877,6 +893,12 @@ export default function AdminAttendanceLogsPage() {
         }
         message={alert?.message}
         type={alert?.type}
+      />
+
+      <AttendanceExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        defaultCutoff={currentCutoff}
       />
 
     </div>

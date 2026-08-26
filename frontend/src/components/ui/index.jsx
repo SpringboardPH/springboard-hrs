@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom'
 import { X, CalendarDays, Clock, LogOut, HelpCircle } from 'lucide-react'
 import clsx from 'clsx'
 import AlertModal from './AlertModal'
+import MultiSelectCombobox from './MultiSelectCombobox'
 
-export { AlertModal }
+export { AlertModal, MultiSelectCombobox }
 
 // ─── PageHeader ───────────────────────────────────────────────
 export function PageHeader({ title, description, action, help }) {

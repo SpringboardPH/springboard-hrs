@@ -13,9 +13,10 @@ import {
   getAdminSettings, adminSettingsKeys,
 } from '../../api/queries'
 import { PageHeader, PageSpinner, StatusBadge, ConfirmModal, Modal, FormField, AlertModal } from '../../components/ui/index.jsx'
-import { Clock, LogIn, LogOut, Pencil, UserX, AlertCircle, LayoutGrid, List, ChevronDown } from 'lucide-react'
+import { Clock, LogIn, LogOut, Pencil, UserX, AlertCircle, LayoutGrid, List, ChevronDown, FileDown } from 'lucide-react'
 import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff, calculateAttendanceStatus, applyAttendanceStatusToForm } from '../../utils/attendance'
 import { calculateHoursWorked } from '../../utils/timeHelpers'
+import AttendanceExportModal from '../../components/attendance/AttendanceExportModal'
 
 export default function AttendancePage() {
   const [navigatedCutoff, setNavigatedCutoff] = useState(null)
@@ -29,6 +30,7 @@ export default function AttendancePage() {
   const [monthlyStatus, setMonthlyStatus] = useState('')
   const [monthlyDate, setMonthlyDate] = useState('')
   const [monthlyGroup, setMonthlyGroup] = useState('')
+  const [exportModalOpen, setExportModalOpen] = useState(false)
   const [earlyClockOutConfirm, setEarlyClockOutConfirm] = useState({
     open: false,
     employeeId: null,
@@ -551,6 +553,7 @@ export default function AttendancePage() {
             'The main table shows all attendance records for the current payroll cutoff period.',
             'Navigate between cutoff periods using the Previous / Next arrows at the top.',
             'Switch between List view (detailed rows) and Grid view (calendar overview) using the icons on the right.',
+            'Export opens a configuration dialog for date range, departments, groups, employee status, attendance statuses, and sheet layout. It does not use the table filters on this page.',
           ]},
           { heading: 'Filters', items: [
             'Search by employee name, filter by attendance status, filter by date, or filter by group.',
@@ -797,6 +800,15 @@ export default function AttendancePage() {
                 onClick={() => moveCutoff(1)}
               >
                 Next
+              </button>
+              <button
+                type="button"
+                className="btn-secondary text-xs px-2 py-1"
+                title="Export to Excel"
+                onClick={() => setExportModalOpen(true)}
+              >
+                <FileDown size={16} />
+                Export
               </button>
             </div>
           </div>
@@ -1241,6 +1253,12 @@ export default function AttendancePage() {
         }
         message={alert?.message}
         type={alert?.type}
+      />
+
+      <AttendanceExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        defaultCutoff={currentCutoff}
       />
     </div>
   )
