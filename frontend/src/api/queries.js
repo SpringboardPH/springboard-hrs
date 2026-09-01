@@ -75,12 +75,13 @@ export const clockIn = (notes, employeeId = null, coords = null) =>
     longitude: coords?.longitude ?? null,
   }).then(r => r.data.data)
 
-export const clockOut = (notes, employeeId = null, confirmEarlyClockOut = false, isOvertime = null) =>
+export const clockOut = (notes, employeeId = null, confirmEarlyClockOut = false, isOvertime = null, fileOvertimeRequest = null) =>
   api.post('/attendance/clock-out', {
     notes,
     employee_id: employeeId,
     confirm_early_clock_out: confirmEarlyClockOut,
     ...(isOvertime !== null && { is_overtime: isOvertime }),
+    ...(fileOvertimeRequest !== null && { file_overtime_request: fileOvertimeRequest }),
   }).then(r => r.data.data)
 
 export const updateAttendanceLog = (id, data) =>

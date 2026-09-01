@@ -43,6 +43,11 @@ export default function AttendancePage() {
     open: false,
     employeeId: null,
   })
+  const [otConfirm, setOtConfirm] = useState({
+    open: false,
+    employeeId: null,
+    overtimeHours: null,
+  })
   const [editLog, setEditLog] = useState(null)
   const [editForm, setEditForm] = useState({ clock_in_time: '', clock_out_time: '', status: '', clock_in_notes: '', clock_out_notes: '' })
   const today = format(new Date(), 'yyyy-MM-dd')
@@ -298,15 +303,17 @@ export default function AttendancePage() {
     },
   })
   const clockOutMutation = useMutation({
-    mutationFn: ({ employeeId, confirmEarlyClockOut = false, isOvertimeParam = null }) =>
-      clockOut('', employeeId, confirmEarlyClockOut, isOvertimeParam !== null ? isOvertimeParam : (overtimeConfirm.employeeId === employeeId ? true : false)),
+    mutationFn: ({ employeeId, confirmEarlyClockOut = false, isOvertimeParam = null, fileOvertimeRequest = null }) =>
+      clockOut('', employeeId, confirmEarlyClockOut, isOvertimeParam !== null ? isOvertimeParam : (overtimeConfirm.employeeId === employeeId ? true : null), fileOvertimeRequest),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: attendanceKeys.todayAll() })
       qc.invalidateQueries({ queryKey: attendanceKeys.all })
+      setOtConfirm({ open: false, employeeId: null, overtimeHours: null })
     },
     onError: (error, variables) => {
+      const data = error?.response?.data
       const shouldConfirmEarlyClockOut =
-        error?.response?.status === 422 && error?.response?.data?.confirm_required
+        error?.response?.status === 422 && data?.confirm_required
 
       if (shouldConfirmEarlyClockOut && !variables?.confirmEarlyClockOut) {
         setEarlyClockOutConfirm({
@@ -316,7 +323,16 @@ export default function AttendancePage() {
         return
       }
 
-      setAlert({ type: 'error', message: error?.response?.data?.message || 'Failed to clock out' })
+      if (error?.response?.status === 422 && data?.ot_confirm_required) {
+        setOtConfirm({
+          open: true,
+          employeeId: variables.employeeId,
+          overtimeHours: data?.data?.overtime_hours ?? null,
+        })
+        return
+      }
+
+      setAlert({ type: 'error', message: data?.message || 'Failed to clock out' })
     },
   })
 
@@ -527,6 +543,41 @@ export default function AttendancePage() {
               className="w-full btn bg-green-600 hover:bg-green-700 text-white"
             >
               Record as Complete
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={otConfirm.open}
+        onClose={() => setOtConfirm({ open: false, employeeId: null, overtimeHours: null })}
+        title="File overtime request?"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            {otConfirm.overtimeHours != null
+              ? `This employee worked ${Number(otConfirm.overtimeHours).toFixed(1)}h past their scheduled end. File an overtime request for approval?`
+              : 'This employee worked past their scheduled end. File an overtime request for approval?'}
+          </p>
+          <div className="grid grid-cols-1 gap-2">
+            <button
+              onClick={() => {
+                clockOutMutation.mutate({ employeeId: otConfirm.employeeId, fileOvertimeRequest: true })
+                setOtConfirm({ open: false, employeeId: null, overtimeHours: null })
+              }}
+              className="w-full btn bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              File OT Request
+            </button>
+            <button
+              onClick={() => {
+                clockOutMutation.mutate({ employeeId: otConfirm.employeeId, fileOvertimeRequest: false })
+                setOtConfirm({ open: false, employeeId: null, overtimeHours: null })
+              }}
+              className="w-full btn bg-gray-100 hover:bg-gray-200 text-gray-800"
+            >
+              Clock Out Without OT
             </button>
           </div>
         </div>
