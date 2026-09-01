@@ -68,6 +68,7 @@ const calculateHours = (clockInTime, clockOutTime) => {
 export default function AttendanceClockPage() {
   const [notes, setNotes] = useState('')
   const [earlyClockOutConfirmOpen, setEarlyClockOutConfirmOpen] = useState(false)
+  const [otConfirm, setOtConfirm] = useState({ open: false, overtimeHours: null, hoursWorked: null, requiredHours: null })
   const [earlyClockInConfirmOpen, setEarlyClockInConfirmOpen] = useState(false)
   const [locationModal, setLocationModal] = useState({ open: false, loading: false, coords: null })
   const [alertConfig, setAlertConfig] = useState({ open: false, title: '', message: '', type: 'error' })
@@ -228,23 +229,35 @@ export default function AttendanceClockPage() {
     },
   })
   const outMutation = useMutation({
-    mutationFn: ({ confirmEarlyClockOut = false } = {}) =>
-      clockOut(notes, null, confirmEarlyClockOut),
+    mutationFn: ({ confirmEarlyClockOut = false, fileOvertimeRequest = null } = {}) =>
+      clockOut(notes, null, confirmEarlyClockOut, null, fileOvertimeRequest),
     onSuccess: () => {
       setNotes('')
+      setOtConfirm({ open: false, overtimeHours: null, hoursWorked: null, requiredHours: null })
       qc.invalidateQueries({ queryKey: attendanceKeys.all })
       qc.invalidateQueries({ queryKey: systemClockKeys.all })
     },
     onError: (error, variables) => {
+      const data = error?.response?.data
       const shouldConfirmEarlyClockOut =
-        error?.response?.status === 422 && error?.response?.data?.confirm_required
+        error?.response?.status === 422 && data?.confirm_required
 
       if (shouldConfirmEarlyClockOut && !variables?.confirmEarlyClockOut) {
         setEarlyClockOutConfirmOpen(true)
         return
       }
 
-      setAlertConfig({ open: true, title: 'Clock Out Failed', message: error?.response?.data?.message || 'Failed to clock out', type: 'error' })
+      if (error?.response?.status === 422 && data?.ot_confirm_required) {
+        setOtConfirm({
+          open: true,
+          overtimeHours: data?.data?.overtime_hours ?? null,
+          hoursWorked: data?.data?.hours_worked ?? null,
+          requiredHours: data?.data?.required_hours ?? null,
+        })
+        return
+      }
+
+      setAlertConfig({ open: true, title: 'Clock Out Failed', message: data?.message || 'Failed to clock out', type: 'error' })
       setNotes('')
       refetch()
     },
@@ -485,6 +498,41 @@ export default function AttendanceClockPage() {
         confirmLabel="Confirm Clock Out"
       />
 
+      <Modal
+        open={otConfirm.open}
+        onClose={() => setOtConfirm({ open: false, overtimeHours: null, hoursWorked: null, requiredHours: null })}
+        title="File overtime request?"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            {otConfirm.overtimeHours != null
+              ? `You worked ${Number(otConfirm.overtimeHours).toFixed(1)}h past your scheduled end. File an overtime request for HR approval?`
+              : 'You worked past your scheduled end. File an overtime request for HR approval?'}
+          </p>
+          <div className="grid grid-cols-1 gap-2">
+            <button
+              onClick={() => {
+                outMutation.mutate({ fileOvertimeRequest: true })
+                setOtConfirm({ open: false, overtimeHours: null, hoursWorked: null, requiredHours: null })
+              }}
+              className="w-full btn bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              File OT Request
+            </button>
+            <button
+              onClick={() => {
+                outMutation.mutate({ fileOvertimeRequest: false })
+                setOtConfirm({ open: false, overtimeHours: null, hoursWorked: null, requiredHours: null })
+              }}
+              className="w-full btn bg-gray-100 hover:bg-gray-200 text-gray-800"
+            >
+              Clock Out Without OT
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <PageHeader
         title="Clock In / Out"
         description={displayDateLabel}
@@ -501,6 +549,7 @@ export default function AttendanceClockPage() {
           { heading: 'Clocking In & Out', items: [
             'Click the green Clock In button when you arrive. Your schedule window is displayed — clocking in outside that window may result in a "Late" or "Early" status.',
             'Click the red Clock Out button at the end of your shift. Clocking out too early may trigger "Undertime" status.',
+            'If you worked past your scheduled end, you will be asked whether to file an overtime request for HR approval.',
             'An optional Notes field appears before confirming — use it to add context for your HR team.',
           ]},
           { heading: 'Location Check-In', items: [
