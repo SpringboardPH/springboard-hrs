@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
-  calendarEventKeys, 
+  calendarEventKeys,
+  attendanceKeys,
   getCalendarEvents, 
   getCalendarEventTypes,
   createCalendarEvent,
@@ -9,9 +10,11 @@ import {
   deleteCalendarEvent,
   importCalendarEvents,
   exportCalendarEvents,
+  previewHolidayImpact,
 } from '../../api/queries'
 import { PageHeader, PageSpinner, Modal, FormField, AlertModal, ConfirmModal } from '../../components/ui'
 import { Calendar } from '../../components/calendar/Calendar'
+import { HolidayRewriteModal } from '../../components/calendar/HolidayRewriteModal'
 import { useAuth } from '../../store/AuthContext'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -76,6 +79,15 @@ export default function CalendarPage({ readOnly = false }) {
   const [pendingUpdateData, setPendingUpdateData] = useState(null)
   const [selectedUpdateScope, setSelectedUpdateScope] = useState('single')
   const [selectedDeleteScope, setSelectedDeleteScope] = useState('single')
+  const [holidayPlan, setHolidayPlan] = useState(null)
+  const [holidayModalOpen, setHolidayModalOpen] = useState(false)
+  const [holidayConfirming, setHolidayConfirming] = useState(false)
+  const pendingHolidayWriteRef = useRef(null)
+
+  const invalidateCalendar = () => {
+    queryClient.invalidateQueries({ queryKey: calendarEventKeys.all })
+    queryClient.invalidateQueries({ queryKey: attendanceKeys.all })
+  }
 
   // Capability check: User must be HR/Admin AND page must NOT be in readOnly mode
   const canManage = !readOnly && ['admin', 'hr', 'accounting'].includes(user?.role)
@@ -102,7 +114,7 @@ export default function CalendarPage({ readOnly = false }) {
   const createMutation = useMutation({
     mutationFn: createCalendarEvent,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: calendarEventKeys.all })
+      invalidateCalendar()
       setIsModalOpen(false)
       reset()
     },
@@ -111,7 +123,7 @@ export default function CalendarPage({ readOnly = false }) {
   const updateMutation = useMutation({
     mutationFn: ({ id, data, updateScope }) => updateCalendarEvent(id, data, updateScope),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: calendarEventKeys.all })
+      invalidateCalendar()
       setIsModalOpen(false)
       setSelectedEvent(null)
       reset()
@@ -121,7 +133,7 @@ export default function CalendarPage({ readOnly = false }) {
   const deleteMutation = useMutation({
     mutationFn: ({ id, deleteScope }) => deleteCalendarEvent(id, deleteScope),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: calendarEventKeys.all })
+      invalidateCalendar()
       setIsModalOpen(false)
       setSelectedEvent(null)
       setIsDeleteScopeModalOpen(false)
@@ -129,10 +141,10 @@ export default function CalendarPage({ readOnly = false }) {
   })
 
   const importMutation = useMutation({
-    mutationFn: importCalendarEvents,
+    mutationFn: ({ file, applyHolidayRewrite }) => importCalendarEvents(file, { applyHolidayRewrite }),
     onSuccess: (data) => {
       setImportResult(data.data)
-      queryClient.invalidateQueries({ queryKey: calendarEventKeys.all })
+      invalidateCalendar()
     },
   })
 
@@ -161,12 +173,27 @@ export default function CalendarPage({ readOnly = false }) {
     }
   }
 
-  const handleImportSubmit = () => {
+  const handleImportSubmit = async () => {
     if (!importFile) {
       setAlertConfig({ open: true, title: 'No File Selected', message: 'Please select a file to import', type: 'warning' })
       return
     }
-    importMutation.mutate(importFile)
+    try {
+      await importMutation.mutateAsync({ file: importFile })
+    } catch (error) {
+      if (error.response?.status === 409) {
+        setHolidayPlan(error.response.data.data.plan)
+        pendingHolidayWriteRef.current = () => importMutation.mutateAsync({ file: importFile, applyHolidayRewrite: true })
+        setHolidayModalOpen(true)
+        return
+      }
+      setAlertConfig({
+        open: true,
+        title: 'Import Failed',
+        message: error.response?.data?.message || 'Failed to import holidays',
+        type: 'error',
+      })
+    }
   }
 
   const closeImportModal = () => {
@@ -235,37 +262,95 @@ export default function CalendarPage({ readOnly = false }) {
     }
   }
 
+  const runWithHolidayConfirm = async (data, write) => {
+    const type = eventTypes?.find((t) => String(t.id) === String(data.calendar_event_type_id))
+    if (type && type.counts_as_absence) {
+      write(data)
+      return
+    }
+    try {
+      const plan = await previewHolidayImpact({
+        calendar_event_type_id: data.calendar_event_type_id,
+        event_date: data.event_date,
+        end_date: data.end_date || data.event_date,
+      })
+      const convert = plan?.convert ?? []
+      const skipped = plan?.skipped_sandwich ?? []
+      if (convert.length === 0 && skipped.length === 0) {
+        write(data)
+        return
+      }
+      setHolidayPlan(plan)
+      pendingHolidayWriteRef.current = () => write({ ...data, apply_holiday_rewrite: true })
+      setHolidayModalOpen(true)
+    } catch (error) {
+      setAlertConfig({
+        open: true,
+        title: 'Error',
+        message: error.response?.data?.message || 'Failed to check holiday impact',
+        type: 'error',
+      })
+    }
+  }
+
   const onSubmit = (data) => {
     if (isEditMode && selectedEvent) {
-      // If type exists and is_recurring_annual is true, it's recurring
       const isRecurring = selectedEvent.type?.is_recurring_annual
-      
       if (isRecurring) {
-        // Show update scope modal
-        console.log('Recurring event detected, opening update modal')
         setPendingUpdateData(data)
         setSelectedUpdateScope('future')
         setIsUpdateScopeModalOpen(true)
       } else {
-        // Single instance, just update normally
-        console.log('Single instance event, updating directly')
-        updateMutation.mutate({ id: selectedEvent.id, data, updateScope: 'single' })
+        runWithHolidayConfirm(data, (payload) => {
+          return updateMutation.mutateAsync({ id: selectedEvent.id, data: payload, updateScope: 'single' })
+        })
       }
     } else {
-      createMutation.mutate(data)
+      runWithHolidayConfirm(data, (payload) => createMutation.mutateAsync(payload))
     }
   }
 
   const handleConfirmUpdate = () => {
     if (pendingUpdateData && selectedEvent) {
-      updateMutation.mutate({
-        id: selectedEvent.id,
-        data: pendingUpdateData,
-        updateScope: selectedUpdateScope,
-      })
+      const data = pendingUpdateData
+      const scope = selectedUpdateScope
       setIsUpdateScopeModalOpen(false)
       setPendingUpdateData(null)
+      runWithHolidayConfirm(data, (payload) => {
+        return updateMutation.mutateAsync({
+          id: selectedEvent.id,
+          data: payload,
+          updateScope: scope,
+        })
+      })
     }
+  }
+
+  const handleHolidayConfirm = async () => {
+    const run = pendingHolidayWriteRef.current
+    if (!run) return
+    setHolidayConfirming(true)
+    try {
+      await run()
+      setHolidayModalOpen(false)
+      setHolidayPlan(null)
+      pendingHolidayWriteRef.current = null
+    } catch (error) {
+      setAlertConfig({
+        open: true,
+        title: 'Error',
+        message: error.response?.data?.message || 'Failed to save',
+        type: 'error',
+      })
+    } finally {
+      setHolidayConfirming(false)
+    }
+  }
+
+  const closeHolidayModal = () => {
+    setHolidayModalOpen(false)
+    setHolidayPlan(null)
+    pendingHolidayWriteRef.current = null
   }
 
   const handleDelete = () => {
@@ -820,6 +905,13 @@ export default function CalendarPage({ readOnly = false }) {
           )}
         </div>
       </Modal>
+      <HolidayRewriteModal
+        open={holidayModalOpen}
+        onClose={closeHolidayModal}
+        onConfirm={handleHolidayConfirm}
+        plan={holidayPlan}
+        confirming={holidayConfirming}
+      />
     </div>
   )
 }

@@ -1161,17 +1161,9 @@ class AttendanceController extends Controller
                                 if (in_array($dayOfWeek, $workDays)) { $isWorkingDay = true; }
                             }
 
-                            if ($isWorkingDay) {
-                                $employeeRecords[] = [
-                                    'employee_id' => $employee->id,
-                                    'employee' => $employee,
-                                    'date' => $dateStr,
-                                    'clock_in_time' => null,
-                                    'clock_out_time' => null,
-                                    'status' => 'absent',
-                                    'template_name' => $templateName,
-                                ];
-                            } elseif ($template->type === 'flexi') {
+                            // Do not fabricate Absent for empty working days — only
+                            // persisted logs (and holiday / leave / flexi rest placeholders).
+                            if ($template->type === 'flexi' && !$isWorkingDay) {
                                 $employeeRecords[] = [
                                     'employee_id' => $employee->id,
                                     'employee' => $employee,
@@ -1563,26 +1555,7 @@ class AttendanceController extends Controller
                          }
                      }
 
-                     if ($isWorkingDay) {
-                         // Only mark as absent if it's NOT today, or if it IS today but the shift end has passed
-                         $shiftEnd = null;
-                         $systemNow = SystemClock::now();
-                         if ($date->isSameDay($today)) {
-                             $shiftEndStr = $template->end_time ?? '18:00:00';
-                             $shiftEnd = $date->copy()->setTimeFrom(Carbon::parse($shiftEndStr));
-                         }
-
-                         if ($date->lt($today) && (!$date->isSameDay($today) || (isset($shiftEnd) && $systemNow->isAfter($shiftEnd)))) {
-                             $allDays[] = [
-                                 'employee_id' => $employeeId,
-                                 'date' => $dateStr,
-                                 'clock_in_time' => null,
-                                 'clock_out_time' => null,
-                                 'status' => 'absent',
-                                 'template_name' => $templateName,
-                             ];
-                         }
-                     } elseif ($template->type === 'flexi') {
+                     if ($template->type === 'flexi' && !$isWorkingDay) {
                          $allDays[] = [
                              'employee_id' => $employeeId,
                              'date' => $dateStr,
@@ -1760,7 +1733,14 @@ class AttendanceController extends Controller
         $statusByDate = [];
         foreach ($days as $day) {
             $date = is_array($day) ? $day['date'] : Carbon::parse($day->date)->format('Y-m-d');
-            $statusByDate[$date] = is_array($day) ? $day['status'] : $day->status;
+            $date = Carbon::parse($date)->format('Y-m-d');
+            $status = is_array($day) ? $day['status'] : $day->status;
+            $persisted = is_array($day) ? !empty($day['id']) : filled($day->id ?? null);
+            // Placeholders (no log id) must not sandwich a stored holiday into Absent.
+            if ($status === 'absent' && !$persisted) {
+                continue;
+            }
+            $statusByDate[$date] = $status;
         }
 
         foreach ($days as &$day) {

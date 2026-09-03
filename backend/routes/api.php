@@ -211,6 +211,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:admin,hr,accounting')->group(function () {
         Route::apiResource('admin/employee-schedules', EmployeeScheduleController::class);
         Route::apiResource('admin/schedule-templates', ScheduleTemplateController::class);
+        Route::post('/admin/calendar-events/holiday-impact', [CalendarEventController::class, 'holidayImpact']);
         Route::apiResource('admin/calendar-events', CalendarEventController::class)->except(['index', 'show']);
         Route::post('/admin/calendar-events/import', [CalendarEventController::class, 'import']);
         Route::get('/admin/calendar-events/export', [CalendarEventController::class, 'export']);

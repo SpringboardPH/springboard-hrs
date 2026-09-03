@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs'
 import { format, parseISO } from 'date-fns'
-import { calculateHoursWorked } from './timeHelpers'
+import { calculateHoursWorked, toAttendanceDateStr } from './timeHelpers'
 
 const DASH = '—'
 export const UNASSIGNED = 'Unassigned'
@@ -85,7 +85,7 @@ export function toExportRow(log) {
   const employee = log.employee
   const statusKey = log.status
   return {
-    date: format(parseISO(log.date), 'yyyy-MM-dd'),
+    date: toAttendanceDateStr(log.date),
     employeeId: employee?.employee_id ?? '',
     employeeName: `${employee?.first_name ?? ''} ${employee?.last_name ?? ''}`.trim(),
     employeeStatus: exportEmployeeStatusLabel(employmentStatusKey(employee)),

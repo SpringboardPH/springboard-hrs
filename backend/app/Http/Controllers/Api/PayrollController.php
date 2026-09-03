@@ -8,6 +8,7 @@ use App\Models\Payroll;
 use App\Models\AttendanceLog;
 use App\Models\EmployeeSchedule;
 use App\Services\AttendanceService;
+use App\Services\HolidayAttendanceService;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -120,6 +121,7 @@ class PayrollController extends Controller
         }
         $employees = $employeeQuery->get();
         $generatedPayrolls = [];
+        $holidayAttendance = app(HolidayAttendanceService::class);
 
         foreach ($employees as $employee) {
             // Skip if payroll already finalized or paid for this cutoff
@@ -163,9 +165,21 @@ class PayrollController extends Controller
 
             $this->resolvePendingShortfallRequests($employee->id, $start, $end);
 
-            $logs = AttendanceLog::where('employee_id', $employee->id)
-                ->whereBetween('date', [$start, $end])
+            $logWindowStart = Carbon::parse($start)->subDay()->format('Y-m-d');
+            $logWindowEnd = Carbon::parse($end)->addDay()->format('Y-m-d');
+            $windowLogs = AttendanceLog::where('employee_id', $employee->id)
+                ->whereBetween('date', [$logWindowStart, $logWindowEnd])
                 ->get();
+
+            $statusByEmployeeDate = [];
+            foreach ($windowLogs as $windowLog) {
+                $statusByEmployeeDate[$employee->id][Carbon::parse($windowLog->date)->format('Y-m-d')] = $windowLog->status;
+            }
+
+            $logs = $windowLogs->filter(function ($log) use ($start, $end) {
+                $dateStr = Carbon::parse($log->date)->format('Y-m-d');
+                return $dateStr >= $start && $dateStr <= $end;
+            });
 
             // Get latest schedule to determine work days and divisor.
             // Flexi templates only populate day_rules (no work_days), so derive from
@@ -276,13 +290,18 @@ class PayrollController extends Controller
                     ? !in_array($date->dayOfWeek, $logWorkDays)
                     : $log->status === 'rest_day';
 
-                // Track absences and half days for deduction purposes
-                if ($log->status === 'absent') {
-                    // Skip deduction if it's a holiday/event that doesn't count as absence
-                    if ($event && $event->type && !$event->type->counts_as_absence) {
-                        continue;
+                $isNonWorkingCalendarDay = $event && $event->type && !$event->shouldCountAsAbsence();
+                $isUnworkedHoliday = $log->status === 'holiday'
+                    || ($log->status === 'absent' && $isNonWorkingCalendarDay);
+
+                if ($isUnworkedHoliday) {
+                    if ($holidayAttendance->isSandwiched($employee->id, $dateStr, $statusByEmployeeDate)) {
+                        $metrics['absent_days']++;
                     }
-                    // Check if this date is covered by an approved leave request
+                    continue;
+                }
+
+                if ($log->status === 'absent') {
                     $coveredLeave = $approvedLeaves->first(
                         fn($leave) => $dateStr >= $leave->start_date->format('Y-m-d')
                                    && $dateStr <= $leave->end_date->format('Y-m-d')
@@ -291,7 +310,7 @@ class PayrollController extends Controller
                         if ($coveredLeave->leaveType?->is_paid) {
                             $metrics['paid_leave_days']++;
                         } else {
-                            $metrics['absent_days']++; // Unpaid leave: full deduction
+                            $metrics['absent_days']++;
                         }
                         continue;
                     }
@@ -490,8 +509,11 @@ class PayrollController extends Controller
             }
 
             foreach ($events as $dateStr => $event) {
-                if ($event->type && !$event->type->counts_as_absence) {
+                if ($event->type && !$event->shouldCountAsAbsence()) {
                     if (\App\Services\PayrollService::isSpecialNonWorkingHoliday($event->type->name)) {
+                        continue;
+                    }
+                    if ($holidayAttendance->isSandwiched($employee->id, $dateStr, $statusByEmployeeDate)) {
                         continue;
                     }
                     $holidayDate = Carbon::parse($dateStr);
