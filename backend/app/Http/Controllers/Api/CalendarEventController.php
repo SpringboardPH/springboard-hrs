@@ -4,14 +4,24 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\CalendarEventResource;
+use App\Models\AuditLog;
 use App\Models\CalendarEvent;
-use App\Models\LeaveRequest;
+use App\Models\CalendarEventType;
 use App\Models\Employee;
+use App\Models\LeaveRequest;
+use App\Services\HolidayAttendanceService;
+use App\Services\HolidayRewritePlan;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class CalendarEventController extends Controller
 {
+    public function __construct(private HolidayAttendanceService $holidayAttendance)
+    {
+    }
+
     /**
      * Get calendar events, optionally filtered by date range
      * All authenticated users can view events
@@ -93,13 +103,50 @@ class CalendarEventController extends Controller
         ]);
     }
 
+    public function holidayImpact(Request $request)
+    {
+        if (!in_array($request->user()->role, ['admin', 'hr'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized: Only HR and admin can create events',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'calendar_event_type_id' => 'required|exists:calendar_event_types,id',
+            'event_date' => 'required|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d|after_or_equal:event_date',
+        ]);
+
+        $type = CalendarEventType::find($validated['calendar_event_type_id']);
+        if (!$type || $type->counts_as_absence) {
+            return response()->json([
+                'success' => true,
+                'data' => (new HolidayRewritePlan())->toArray(),
+                'message' => 'No holiday attendance rewrite',
+            ]);
+        }
+
+        $dates = $this->holidayAttendance->datesCovered(
+            $validated['event_date'],
+            $validated['end_date'] ?? null,
+            (bool) $type->is_recurring_annual
+        );
+        $plan = $this->holidayAttendance->preview($dates);
+
+        return response()->json([
+            'success' => true,
+            'data' => $plan->toArray(),
+            'message' => 'Holiday attendance impact',
+        ]);
+    }
+
     /**
      * Create a new calendar event
      * Only HR and Admin can create
      */
     public function store(Request $request)
     {
-        // Check authorization
         if (!in_array($request->user()->role, ['admin', 'hr'])) {
             return response()->json([
                 'success' => false,
@@ -113,42 +160,62 @@ class CalendarEventController extends Controller
             'end_date' => 'nullable|date_format:Y-m-d|after_or_equal:event_date',
             'title' => 'required|string|max:200',
             'description' => 'nullable|string|max:1000',
+            'apply_holiday_rewrite' => 'sometimes|boolean',
         ]);
+        $applyRewrite = $request->boolean('apply_holiday_rewrite');
+        unset($validated['apply_holiday_rewrite']);
 
-        $event = CalendarEvent::create([
-            'calendar_event_type_id' => $validated['calendar_event_type_id'],
-            'event_date' => $validated['event_date'],
-            'end_date' => $validated['end_date'] ?? $validated['event_date'],
-            'title' => $validated['title'],
-            'description' => $validated['description'] ?? null,
-            'created_by' => $request->user()->id,
-        ]);
-
-        $type = \App\Models\CalendarEventType::find($validated['calendar_event_type_id']);
-        if ($type && $type->is_recurring_annual) {
-            $startDate = \Illuminate\Support\Carbon::parse($validated['event_date']);
-            $endDate = $validated['end_date'] ? \Illuminate\Support\Carbon::parse($validated['end_date']) : $startDate;
-            $duration = $startDate->diffInDays($endDate);
-
-            for ($i = 1; $i <= 10; $i++) {
-                $nextStartDate = $startDate->copy()->addYears($i);
-                $nextEndDate = $nextStartDate->copy()->addDays($duration);
-
-                CalendarEvent::create([
-                    'calendar_event_type_id' => $validated['calendar_event_type_id'],
-                    'event_date' => $nextStartDate->format('Y-m-d'),
-                    'end_date' => $nextEndDate->format('Y-m-d'),
-                    'title' => $validated['title'],
-                    'description' => $validated['description'] ?? null,
-                    'created_by' => $request->user()->id,
-                ]);
-            }
+        $type = CalendarEventType::find($validated['calendar_event_type_id']);
+        $dates = $this->holidayAttendance->datesCovered(
+            $validated['event_date'],
+            $validated['end_date'] ?? null,
+            (bool) ($type?->is_recurring_annual)
+        );
+        $plan = $this->holidayAttendance->planForType($type, $dates);
+        if ($conflict = $this->holidayRewriteConflict($plan, $applyRewrite)) {
+            return $conflict;
         }
 
-        // Load the relation for the resource
+        $event = DB::transaction(function () use ($validated, $request, $type, $plan) {
+            $event = CalendarEvent::create([
+                'calendar_event_type_id' => $validated['calendar_event_type_id'],
+                'event_date' => $validated['event_date'],
+                'end_date' => $validated['end_date'] ?? $validated['event_date'],
+                'title' => $validated['title'],
+                'description' => $validated['description'] ?? null,
+                'created_by' => $request->user()->id,
+            ]);
+
+            if ($type && $type->is_recurring_annual) {
+                $startDate = Carbon::parse($validated['event_date']);
+                $endDate = $validated['end_date'] ? Carbon::parse($validated['end_date']) : $startDate;
+                $duration = $startDate->diffInDays($endDate);
+
+                for ($i = 1; $i <= 10; $i++) {
+                    $nextStartDate = $startDate->copy()->addYears($i);
+                    $nextEndDate = $nextStartDate->copy()->addDays($duration);
+
+                    CalendarEvent::create([
+                        'calendar_event_type_id' => $validated['calendar_event_type_id'],
+                        'event_date' => $nextStartDate->format('Y-m-d'),
+                        'end_date' => $nextEndDate->format('Y-m-d'),
+                        'title' => $validated['title'],
+                        'description' => $validated['description'] ?? null,
+                        'created_by' => $request->user()->id,
+                    ]);
+                }
+            }
+
+            if ($type && !$type->counts_as_absence) {
+                $this->holidayAttendance->apply($plan);
+            }
+
+            return $event;
+        });
+
         $event->load('type');
 
-        \App\Models\AuditLog::log(
+        AuditLog::log(
             'calendar_event_created',
             "Created calendar event: {$event->title} on {$event->event_date}",
             $event,
@@ -183,7 +250,6 @@ class CalendarEventController extends Controller
      */
     public function update(Request $request, CalendarEvent $calendarEvent)
     {
-        // Check authorization
         if (!in_array($request->user()->role, ['admin', 'hr'])) {
             return response()->json([
                 'success' => false,
@@ -198,88 +264,98 @@ class CalendarEventController extends Controller
             'title' => 'sometimes|string|max:200',
             'description' => 'nullable|string|max:1000',
             'update_scope' => 'sometimes|in:single,future,all',
+            'apply_holiday_rewrite' => 'sometimes|boolean',
         ]);
 
-        // Extract update_scope before updating the model
+        $applyRewrite = $request->boolean('apply_holiday_rewrite');
         $updateScope = $validated['update_scope'] ?? 'single';
-        unset($validated['update_scope']);
+        unset($validated['update_scope'], $validated['apply_holiday_rewrite']);
 
-        // Determine which events to update
         $eventsToUpdate = collect();
-        
+
         if ($updateScope === 'single') {
-            // Update only this event
             $eventsToUpdate->push($calendarEvent);
         } else {
-            // For 'future' and 'all', we need to find related events by title and type
             $query = CalendarEvent::where('title', $calendarEvent->title)
                 ->where('calendar_event_type_id', $calendarEvent->calendar_event_type_id);
-            
+
             if ($updateScope === 'future') {
-                // This event and all future occurrences
                 $query->where('event_date', '>=', $calendarEvent->event_date);
             }
-            
+
             $eventsToUpdate = $query->get();
             \Log::info("Number of events to update for scope {$updateScope}: " . $eventsToUpdate->count());
         }
 
-        // Update all selected events
+        $prepared = [];
         foreach ($eventsToUpdate as $event) {
-            $originalEventDate = \Carbon\Carbon::parse($event->event_date)->startOfDay();
-            $originalEndDate = $event->end_date ? \Carbon\Carbon::parse($event->end_date)->startOfDay() : $originalEventDate;
-            
-            // Calculate the original duration of this instance in days
+            $originalEventDate = Carbon::parse($event->event_date)->startOfDay();
+            $originalEndDate = $event->end_date ? Carbon::parse($event->end_date)->startOfDay() : $originalEventDate;
             $originalDuration = $originalEventDate->diffInDays($originalEndDate);
-
             $currentUpdates = $validated;
 
             if (isset($validated['event_date'])) {
-                $newEventDate = \Carbon\Carbon::parse($validated['event_date'])->startOfDay();
-
-                // Determine the new duration from the submitted dates.
-                // If the user supplied an end_date use it, otherwise fall back to
-                // the original duration so single-day events stay single-day.
+                $newEventDate = Carbon::parse($validated['event_date'])->startOfDay();
                 $newEndDateSubmitted = isset($validated['end_date'])
-                    ? \Carbon\Carbon::parse($validated['end_date'])->startOfDay()
+                    ? Carbon::parse($validated['end_date'])->startOfDay()
                     : null;
-
                 $newDuration = $newEndDateSubmitted !== null
-                    ? $newEventDate->diffInDays($newEndDateSubmitted)   // may be 0 for same-day
+                    ? $newEventDate->diffInDays($newEndDateSubmitted)
                     : $originalDuration;
 
                 if ($updateScope !== 'single') {
-                    // For future/all: shift each instance's month/day to match the
-                    // submitted event_date, preserving only the year of each instance.
                     $newMonth = $newEventDate->month;
-                    $newDay   = $newEventDate->day;
-
+                    $newDay = $newEventDate->day;
                     $shiftedEventDate = $originalEventDate->copy()->month($newMonth)->day($newDay);
                     $currentUpdates['event_date'] = $shiftedEventDate->format('Y-m-d');
-                    // Apply the new duration (from submitted dates) to every instance
                     $currentUpdates['end_date'] = $shiftedEventDate->copy()->addDays($newDuration)->format('Y-m-d');
                 } else {
-                    // Single scope: use exactly what was submitted
                     $currentUpdates['event_date'] = $newEventDate->format('Y-m-d');
                     $currentUpdates['end_date'] = $newEndDateSubmitted !== null
                         ? $newEndDateSubmitted->format('Y-m-d')
                         : $newEventDate->copy()->addDays($originalDuration)->format('Y-m-d');
                 }
             } elseif (isset($validated['end_date']) && $updateScope !== 'single') {
-                // Date not changed but end_date was: apply the new end_date offset to every instance.
-                $newEndDateSubmitted = \Carbon\Carbon::parse($validated['end_date'])->startOfDay();
-                $submittedStart = \Carbon\Carbon::parse($calendarEvent->event_date)->startOfDay();
+                $newEndDateSubmitted = Carbon::parse($validated['end_date'])->startOfDay();
+                $submittedStart = Carbon::parse($calendarEvent->event_date)->startOfDay();
                 $newDuration = $submittedStart->diffInDays($newEndDateSubmitted);
                 $currentUpdates['end_date'] = $originalEventDate->copy()->addDays($newDuration)->format('Y-m-d');
             }
-            
-            \Log::info("Updating event ID {$event->id} with data:", $currentUpdates);
-            $result = $event->update($currentUpdates);
-            \Log::info("Update result for event ID {$event->id}: " . ($result ? 'success' : 'failure'));
+
+            $prepared[] = [$event, $currentUpdates];
         }
-        
+
+        $resultingTypeId = $validated['calendar_event_type_id'] ?? $calendarEvent->calendar_event_type_id;
+        $type = CalendarEventType::find($resultingTypeId);
+        $dates = [];
+        if ($type && !$type->counts_as_absence) {
+            foreach ($prepared as [$event, $updates]) {
+                $start = $updates['event_date'] ?? Carbon::parse($event->event_date)->format('Y-m-d');
+                $end = $updates['end_date'] ?? ($event->end_date
+                    ? Carbon::parse($event->end_date)->format('Y-m-d')
+                    : $start);
+                $dates = array_merge($dates, $this->holidayAttendance->datesCovered($start, $end, false));
+            }
+        }
+        $plan = $this->holidayAttendance->planForType($type, $dates);
+        if ($conflict = $this->holidayRewriteConflict($plan, $applyRewrite)) {
+            return $conflict;
+        }
+
+        DB::transaction(function () use ($prepared, $type, $plan) {
+            foreach ($prepared as [$event, $currentUpdates]) {
+                \Log::info("Updating event ID {$event->id} with data:", $currentUpdates);
+                $result = $event->update($currentUpdates);
+                \Log::info("Update result for event ID {$event->id}: " . ($result ? 'success' : 'failure'));
+            }
+
+            if ($type && !$type->counts_as_absence) {
+                $this->holidayAttendance->apply($plan);
+            }
+        });
+
         $calendarEvent->load('type');
-        
+
         return response()->json([
             'success' => true,
             'data' => new CalendarEventResource($calendarEvent),
@@ -405,97 +481,99 @@ class CalendarEventController extends Controller
             ], 422);
         }
 
-        // Get default holiday type or create one
-        $defaultType = \App\Models\CalendarEventType::where('name', 'Holiday')->first();
-        if (!$defaultType) {
-            $defaultType = \App\Models\CalendarEventType::create([
-                'name' => 'Holiday',
-                'description' => 'Company holiday',
-                'color' => '#FF6B6B',
-                'counts_as_absence' => false,
-                'is_recurring_annual' => false,
-                'created_by' => $request->user()->id,
-            ]);
+        $applyRewrite = $request->boolean('apply_holiday_rewrite');
+        $rewriteDates = $this->holidayAttendance->nonWorkingImportDates($holidays);
+        $plan = $this->holidayAttendance->preview($rewriteDates);
+        if ($conflict = $this->holidayRewriteConflict($plan, $applyRewrite)) {
+            return $conflict;
         }
 
         $created = 0;
         $skipped = 0;
 
-        // Bulk create events
-        foreach ($holidays as $index => $holiday) {
-            try {
-                // Validate required fields
-                if (empty($holiday['date']) || empty($holiday['title'])) {
-                    $errors[] = "Row " . ($index + 1) . ": Missing required fields (date or title)";
-                    $skipped++;
-                    continue;
-                }
+        DB::transaction(function () use ($holidays, $request, $plan, &$created, &$skipped, &$errors) {
+            $defaultType = CalendarEventType::where('name', 'Holiday')->first();
+            if (!$defaultType) {
+                $defaultType = CalendarEventType::create([
+                    'name' => 'Holiday',
+                    'description' => 'Company holiday',
+                    'color' => '#FF6B6B',
+                    'counts_as_absence' => false,
+                    'is_recurring_annual' => false,
+                    'created_by' => $request->user()->id,
+                ]);
+            }
 
-                // Validate date format
-                $date = Carbon::createFromFormat('Y-m-d', $holiday['date']);
-                if (!$date) {
-                    $errors[] = "Row " . ($index + 1) . ": Invalid date format. Use YYYY-MM-DD";
-                    $skipped++;
-                    continue;
-                }
+            foreach ($holidays as $index => $holiday) {
+                try {
+                    if (empty($holiday['date']) || empty($holiday['title'])) {
+                        $errors[] = "Row " . ($index + 1) . ": Missing required fields (date or title)";
+                        $skipped++;
+                        continue;
+                    }
 
-                $isRecurring = $holiday['is_recurring'] ?? false;
+                    $date = Carbon::createFromFormat('Y-m-d', $holiday['date']);
+                    if (!$date) {
+                        $errors[] = "Row " . ($index + 1) . ": Invalid date format. Use YYYY-MM-DD";
+                        $skipped++;
+                        continue;
+                    }
 
-                // Find, create, or update event type with recurrence flag
-                $type = $defaultType;
-                if (!empty($holiday['type_name'])) {
-                    $type = \App\Models\CalendarEventType::where('name', $holiday['type_name'])->first();
-                    if (!$type) {
-                        $type = \App\Models\CalendarEventType::create([
-                            'name' => $holiday['type_name'],
-                            'description' => '',
-                            'color' => '#FF6B6B',
-                            'counts_as_absence' => false,
-                            'is_recurring_annual' => $isRecurring,
-                            'created_by' => $request->user()->id,
-                        ]);
+                    $isRecurring = $holiday['is_recurring'] ?? false;
+
+                    $type = $defaultType;
+                    if (!empty($holiday['type_name'])) {
+                        $type = CalendarEventType::where('name', $holiday['type_name'])->first();
+                        if (!$type) {
+                            $type = CalendarEventType::create([
+                                'name' => $holiday['type_name'],
+                                'description' => '',
+                                'color' => '#FF6B6B',
+                                'counts_as_absence' => false,
+                                'is_recurring_annual' => $isRecurring,
+                                'created_by' => $request->user()->id,
+                            ]);
+                        } else {
+                            if ($isRecurring && !$type->is_recurring_annual) {
+                                $type->update(['is_recurring_annual' => true]);
+                            }
+                        }
                     } else {
-                        // Update the type's recurring flag if this import says it should be
                         if ($isRecurring && !$type->is_recurring_annual) {
                             $type->update(['is_recurring_annual' => true]);
                         }
                     }
-                } else {
-                    // Using default type - update if this entry is recurring
-                    if ($isRecurring && !$type->is_recurring_annual) {
-                        $type->update(['is_recurring_annual' => true]);
+
+                    $startYear = (int) $date->format('Y');
+                    $endYear = $type->is_recurring_annual ? $startYear + 10 : $startYear + 1;
+
+                    for ($year = $startYear; $year < $endYear; $year++) {
+                        $eventDate = Carbon::createFromDate($year, $date->format('m'), $date->format('d'));
+
+                        $exists = CalendarEvent::where('event_date', $eventDate->format('Y-m-d'))
+                            ->where('title', $holiday['title'])
+                            ->exists();
+
+                        if (!$exists) {
+                            CalendarEvent::create([
+                                'calendar_event_type_id' => $type->id,
+                                'event_date' => $eventDate->format('Y-m-d'),
+                                'end_date' => $eventDate->format('Y-m-d'),
+                                'title' => $holiday['title'],
+                                'description' => $holiday['description'] ?? null,
+                                'created_by' => $request->user()->id,
+                            ]);
+                            $created++;
+                        }
                     }
+                } catch (\Exception $e) {
+                    $errors[] = "Row " . ($index + 1) . ": " . $e->getMessage();
+                    $skipped++;
                 }
-
-                // Create events for 10 years if type is recurring, otherwise just one year
-                $startYear = (int) $date->format('Y');
-                $endYear = $type->is_recurring_annual ? $startYear + 10 : $startYear + 1;
-
-                for ($year = $startYear; $year < $endYear; $year++) {
-                    $eventDate = Carbon::createFromDate($year, $date->format('m'), $date->format('d'));
-                    
-                    // Check if event already exists for this date
-                    $exists = CalendarEvent::where('event_date', $eventDate->format('Y-m-d'))
-                        ->where('title', $holiday['title'])
-                        ->exists();
-
-                    if (!$exists) {
-                        CalendarEvent::create([
-                            'calendar_event_type_id' => $type->id,
-                            'event_date' => $eventDate->format('Y-m-d'),
-                            'end_date' => $eventDate->format('Y-m-d'),
-                            'title' => $holiday['title'],
-                            'description' => $holiday['description'] ?? null,
-                            'created_by' => $request->user()->id,
-                        ]);
-                        $created++;
-                    }
-                }
-            } catch (\Exception $e) {
-                $errors[] = "Row " . ($index + 1) . ": " . $e->getMessage();
-                $skipped++;
             }
-        }
+
+            $this->holidayAttendance->apply($plan);
+        });
 
         return response()->json([
             'success' => true,
@@ -573,5 +651,23 @@ class CalendarEventController extends Controller
                 'Content-Disposition' => 'attachment; filename="holidays_' . now()->format('Y-m-d_His') . '.csv"',
             ]
         );
+    }
+
+    private function holidayRewriteConflict(HolidayRewritePlan $plan, bool $applyRewrite): ?JsonResponse
+    {
+        if (!$plan->hasImpact() || $applyRewrite) {
+            return null;
+        }
+
+        $count = count($plan->convert);
+
+        return response()->json([
+            'success' => false,
+            'message' => "Confirmation required to change {$count} absent employee(s) to Holiday.",
+            'data' => [
+                'requires_confirmation' => true,
+                'plan' => $plan->toArray(),
+            ],
+        ], 409);
     }
 }

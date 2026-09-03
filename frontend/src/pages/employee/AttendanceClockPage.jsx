@@ -16,6 +16,7 @@ import GeofenceMapPreview from '../../components/GeofenceMapPreview.jsx'
 import { Clock, LogOut, AlertCircle, CalendarDays, Sparkles, MapPin } from 'lucide-react'
 import { useAuth } from '../../store/AuthContext'
 import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff, canEmployeeClockIn } from '../../utils/attendance'
+import { toAttendanceDateStr } from '../../utils/timeHelpers'
 
 // Resolve GPS coords for geo-tagging; resolves null if unsupported/denied/timeout
 // so clock-in always proceeds. ponytail: no library, browser Geolocation API only.
@@ -171,7 +172,8 @@ export default function AttendanceClockPage() {
 
   const getEventForDate = (dateStr) => {
     if (!events) return null
-    return events.find(e => (e.event_date?.substring(0, 10)) === dateStr)
+    const key = toAttendanceDateStr(dateStr)
+    return events.find(e => toAttendanceDateStr(e.event_date) === key)
   }
 
   const getEventTypeForEvent = (event) => {
@@ -789,7 +791,7 @@ export default function AttendanceClockPage() {
                   <tbody className="divide-y divide-gray-50">
                     {monthlyLogs.map(log => (
                       <tr key={log.id || log.date} className="hover:bg-gray-50">
-                        <td className="py-2.5 pr-4 text-gray-600">{format(parseISO(log.date), 'MMM dd, yyyy')}</td>
+                        <td className="py-2.5 pr-4 text-gray-600">{format(parseISO(toAttendanceDateStr(log.date)), 'MMM dd, yyyy')}</td>
                         <td className="py-2.5 pr-4 text-gray-600">{log.template_name || '—'}</td>
                         <td className="py-2.5 pr-4 text-gray-600">{log.clock_in_time ?? '—'}</td>
                         <td className="py-2.5 pr-4 text-gray-600">{log.clock_out_time ?? '—'}</td>
@@ -820,7 +822,9 @@ export default function AttendanceClockPage() {
                             if (log.status === 'undertime') return <span className="badge-yellow text-[10px] px-1.5 py-0.5 rounded">Undertime</span>
                             if (log.status === 'half_day') return <span className="badge-orange text-[10px] px-1.5 py-0.5 rounded">Half Day</span>
                             if (log.status === 'rest_day') return <span className="badge-blue text-[10px] px-1.5 py-0.5 rounded">Rest Day</span>
-                            return <span className="badge-red text-[10px] px-1.5 py-0.5 rounded">Absent</span>
+                            if (log.status === 'holiday') return <span className="badge-purple text-[10px] px-1.5 py-0.5 rounded">Holiday</span>
+                            if (log.status === 'absent') return <span className="badge-red text-[10px] px-1.5 py-0.5 rounded">Absent</span>
+                            return <span className="badge-gray text-[10px] px-1.5 py-0.5 rounded">{log.status?.replace('_', ' ') || '—'}</span>
                           })()}
                         </td>
                       </tr>

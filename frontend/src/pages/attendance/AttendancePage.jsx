@@ -15,7 +15,7 @@ import {
 import { PageHeader, PageSpinner, StatusBadge, ConfirmModal, Modal, FormField, AlertModal } from '../../components/ui/index.jsx'
 import { Clock, LogIn, LogOut, Pencil, UserX, AlertCircle, LayoutGrid, List, ChevronDown, FileDown } from 'lucide-react'
 import { getClockWindow, getCutoffPeriod, getNextCutoff, getPrevCutoff, calculateAttendanceStatus, applyAttendanceStatusToForm } from '../../utils/attendance'
-import { calculateHoursWorked } from '../../utils/timeHelpers'
+import { calculateHoursWorked, toAttendanceDateStr } from '../../utils/timeHelpers'
 import AttendanceExportModal from '../../components/attendance/AttendanceExportModal'
 
 export default function AttendancePage() {
@@ -133,14 +133,14 @@ export default function AttendancePage() {
     }, log.status || ''))
   }
 
-  const openBlankCell = (employeeId, employeeName, dateStr) => {
+  const openBlankCell = (employeeId, employeeName, dateStr, status = 'rest_day') => {
     // Blanks are usually unscheduled / fixed off-days. Default rest_day so a
     // careless save does not create an absent that payroll would deduct.
     openEditModal({
       id: null,
       employee_id: Number(employeeId),
       date: dateStr,
-      status: 'rest_day',
+      status,
       clock_in_time: null,
       clock_out_time: null,
       clock_in_notes: null,
@@ -270,7 +270,8 @@ export default function AttendancePage() {
 
   const getEventForDate = (dateStr) => {
     if (!events) return null
-    return events.find(e => (e.event_date?.substring(0, 10)) === dateStr)
+    const key = toAttendanceDateStr(dateStr)
+    return events.find(e => toAttendanceDateStr(e.event_date) === key)
   }
 
   const getEventTypeForEvent = (event) => {
@@ -470,6 +471,7 @@ export default function AttendancePage() {
       if (log) {
         if (log.status === 'on_leave') effective = 'on_leave'
         else if (log.status === 'absent') effective = 'absent'
+        else if (log.status === 'holiday') effective = 'holiday'
         else effective = log.clock_out_time ? (log.status || 'completed') : 'working'
       } else {
         if (win?.isInactiveDay) effective = 'not_scheduled'
@@ -652,6 +654,7 @@ export default function AttendancePage() {
                 <option value="completed">Done</option>
                 <option value="not_yet">Not Yet</option>
                 <option value="absent">Absent</option>
+                <option value="holiday">Holiday</option>
                 <option value="not_scheduled">Not Scheduled</option>
               </select>
               {employeeGroups.length > 0 && (
@@ -882,6 +885,7 @@ export default function AttendancePage() {
               <option value="on_leave">On Leave</option>
               <option value="absent">Absent</option>
               <option value="rest_day">Rest Day</option>
+              <option value="holiday">Holiday</option>
             </select>
             <input type="date" className="input text-sm sm:w-36 sm:shrink-0" value={monthlyDate} onChange={e => setMonthlyDate(e.target.value)} />
             {employeeGroups.length > 0 && (
@@ -920,8 +924,8 @@ export default function AttendancePage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {logs.slice((logPage - 1) * PAGE_SIZE, logPage * PAGE_SIZE).map(log => (
-                  <tr key={log.id} className="hover:bg-gray-50">
-                    <td className="py-2.5 pr-4 text-gray-600 text-sm">{format(parseISO(log.date), 'MMM dd, yyyy')}</td>
+                  <tr key={log.id ?? `${log.employee_id}-${toAttendanceDateStr(log.date)}`} className="hover:bg-gray-50">
+                    <td className="py-2.5 pr-4 text-gray-600 text-sm">{format(parseISO(toAttendanceDateStr(log.date)), 'MMM dd, yyyy')}</td>
                     <td className="py-2.5 pr-4 font-medium text-gray-900 text-sm">
                       {log.employee?.first_name} {log.employee?.last_name}
                     </td>
@@ -998,7 +1002,11 @@ export default function AttendancePage() {
                     data: {}
                   }
                 }
-                acc[empId].data[format(parseISO(log.date), 'yyyy-MM-dd')] = log
+                const dateKey = toAttendanceDateStr(log.date)
+                const existing = acc[empId].data[dateKey]
+                if (!existing || (existing.id == null && log.id != null)) {
+                  acc[empId].data[dateKey] = log
+                }
                 return acc
               }, {})
 
@@ -1039,7 +1047,8 @@ export default function AttendancePage() {
                         {cutoffDates.map(date => {
                           const dateStr = format(date, 'yyyy-MM-dd')
                           const log = emp.data[dateStr]
-                          const status = log?.status
+                          const isStoredLog = log?.id != null
+                          const status = (!isStoredLog && log?.status === 'absent') ? undefined : log?.status
                           const config = GRID_STATUS_MAP[status]
                           const event = getEventForDate(dateStr)
                           const color = getEventColor(event)
@@ -1051,13 +1060,17 @@ export default function AttendancePage() {
                             <td key={dateStr} className="p-1 border-b border-gray-50 text-center relative">
                               {(status || isHolidayEvent) ? (
                                 <button
-                                  onClick={() => log ? openEditModal(log) : null}
+                                  type="button"
+                                  onClick={() => log && status
+                                    ? openEditModal(log)
+                                    : openBlankCell(empId, emp.name, dateStr, isHolidayEvent ? 'holiday' : 'rest_day')}
                                   className={clsx(
                                     "w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold transition-transform hover:scale-110 shadow-sm mx-auto",
                                     isHolidayEvent ? "" : (config?.color || 'bg-gray-100 text-gray-400')
                                   )}
                                   style={isHolidayEvent ? { backgroundColor: color, color: 'white' } : {}}
                                   title={`${emp.name} - ${format(date, 'MMM dd')}: ${status ? status.replace('_', ' ') : (event?.title || 'Event')}`}
+                                  aria-label={`Edit attendance for ${emp.name} on ${format(date, 'MMM dd')}`}
                                 >
                                   {isHolidayEvent ? getEventCode(event) : (config?.letter || '?')}
                                 </button>
@@ -1107,7 +1120,9 @@ export default function AttendancePage() {
                   : '—'}
                 {editLog.id == null && (
                   <span className="block text-[11px] text-gray-400 mt-1">
-                    No log for this day yet. Defaults to Rest Day so payroll will not treat it as an absence.
+                    {editLog.status === 'holiday'
+                      ? 'No log for this day yet. Defaults to Holiday to match the calendar event.'
+                      : 'No log for this day yet. Defaults to Rest Day so payroll will not treat it as an absence.'}
                   </span>
                 )}
               </p>
@@ -1129,6 +1144,7 @@ export default function AttendancePage() {
                   <option value="absent">Absent</option>
                   <option value="on_leave">On Leave</option>
                   <option value="rest_day">Rest Day</option>
+                  <option value="holiday">Holiday</option>
                 </select>
                 
                 {(() => {

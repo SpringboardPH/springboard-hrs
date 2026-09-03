@@ -9,7 +9,7 @@ import {
 } from '../../api/queries'
 import { PageHeader, PageSpinner, StatusBadge, ConfirmModal, Modal, FormField, AlertModal } from '../../components/ui/index.jsx'
 import { Pencil, Trash2, AlertCircle, MapPin, FileDown } from 'lucide-react'
-import { calculateHoursWorked } from '../../utils/timeHelpers'
+import { calculateHoursWorked, toAttendanceDateStr } from '../../utils/timeHelpers'
 import AttendanceExportModal from '../../components/attendance/AttendanceExportModal'
 import { calculateAttendanceStatus, getCutoffPeriod, getNextCutoff, getPrevCutoff, applyAttendanceStatusToForm } from '../../utils/attendance'
 
@@ -189,7 +189,8 @@ export default function AdminAttendanceLogsPage() {
 
   const getEventForDate = (dateStr) => {
     if (!events) return null
-    return events.find(e => (e.event_date?.substring(0, 10)) === dateStr)
+    const key = toAttendanceDateStr(dateStr)
+    return events.find(e => toAttendanceDateStr(e.event_date) === key)
   }
 
   const getEventTypeForEvent = (event) => {
@@ -214,7 +215,7 @@ export default function AdminAttendanceLogsPage() {
       open: true,
       logId: log.id,
       employeeName: `${log.employee?.first_name} ${log.employee?.last_name}`,
-      date: format(parseISO(log.date), 'MMM dd, yyyy'),
+      date: format(parseISO(toAttendanceDateStr(log.date)), 'MMM dd, yyyy'),
     })
   }
 
@@ -416,6 +417,7 @@ export default function AdminAttendanceLogsPage() {
               <option value="on_leave">On Leave</option>
               <option value="absent">Absent</option>
               <option value="rest_day">Rest Day</option>
+              <option value="holiday">Holiday</option>
             </select>
             <input type="date" className="input text-sm w-36 shrink-0" value={filters.date} onChange={e => setFilters({ ...filters, date: e.target.value })} />
             {employeeGroups.length > 0 && (
@@ -473,7 +475,7 @@ export default function AdminAttendanceLogsPage() {
                 {logs.map(log => (
                   <tr key={log.id} className="hover:bg-gray-50">
                     <td className="py-2.5 pr-4 text-gray-600 text-sm">
-                      {format(parseISO(log.date), 'MMM dd, yyyy')}
+                      {format(parseISO(toAttendanceDateStr(log.date)), 'MMM dd, yyyy')}
                     </td>
                     <td className="py-2.5 pr-4 font-medium text-gray-900 text-sm">
                       {log.employee?.first_name} {log.employee?.last_name}
@@ -594,6 +596,7 @@ export default function AdminAttendanceLogsPage() {
                   <option value="absent">Absent</option>
                   <option value="on_leave">On Leave</option>
                   <option value="rest_day">Rest Day</option>
+                  <option value="holiday">Holiday</option>
                 </select>
 
                 {(() => {
@@ -799,6 +802,7 @@ export default function AdminAttendanceLogsPage() {
                   <option value="on_leave">On Leave</option>
                   <option value="absent">Absent</option>
                   <option value="rest_day">Rest Day</option>
+                  <option value="holiday">Holiday</option>
                 </select>
 
                 {(() => {

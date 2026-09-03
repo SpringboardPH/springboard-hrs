@@ -445,15 +445,21 @@ export const getCalendarEvents = (params = {}) =>
 export const createCalendarEvent = (data) =>
   api.post('/admin/calendar-events', data).then(r => r.data)
 
+export const previewHolidayImpact = (data) =>
+  api.post('/admin/calendar-events/holiday-impact', data).then(r => r.data.data)
+
 export const updateCalendarEvent = (id, data, updateScope = 'single') =>
   api.put(`/admin/calendar-events/${id}`, { ...data, update_scope: updateScope }).then(r => r.data)
 
 export const deleteCalendarEvent = (id, deleteScope = 'single') =>
   api.delete(`/admin/calendar-events/${id}`, { params: { delete_scope: deleteScope } }).then(r => r.data)
 
-export const importCalendarEvents = (file) => {
+export const importCalendarEvents = (file, { applyHolidayRewrite } = {}) => {
   const formData = new FormData()
   formData.append('file', file)
+  if (applyHolidayRewrite) {
+    formData.append('apply_holiday_rewrite', '1')
+  }
   return api.post('/admin/calendar-events/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
