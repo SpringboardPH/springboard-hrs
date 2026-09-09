@@ -34,6 +34,27 @@ class AttendanceController extends Controller
         return EmployeeSchedule::getForEmployeeOnDate($employeeId, $date);
     }
 
+    private function flexiOpenYesterdayLog(int $employeeId, Carbon $today): ?AttendanceLog
+    {
+        $yesterday = $today->copy()->subDay();
+        $yLog = AttendanceLog::where('employee_id', $employeeId)
+            ->whereDate('date', $yesterday->toDateString())
+            ->whereNotNull('clock_in_time')
+            ->whereNull('clock_out_time')
+            ->first();
+
+        if (!$yLog) {
+            return null;
+        }
+
+        $type = $yLog->schedule_type;
+        if (!$type) {
+            $type = $this->getScheduleForDate($employeeId, $yesterday)?->template?->type;
+        }
+
+        return $type === 'flexi' ? $yLog : null;
+    }
+
     private function parseTimeToMinutes(?string $time)
     {
         if (!$time) return 0;
@@ -468,6 +489,13 @@ class AttendanceController extends Controller
             $schedule = $ySchedule;
             $dayRule = $yRule;
             $templateType = $ySchedule->template->type ?? 'fixed';
+        }
+
+        if ($this->flexiOpenYesterdayLog($employee->id, $today)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You have already clocked in for the current shift',
+            ], 400);
         }
 
         // Check if employee is on leave today
@@ -1324,6 +1352,15 @@ class AttendanceController extends Controller
                     $record = $yLog;
                     $schedule = $ySchedule;
                     $dayRule = $yRule;
+                }
+            }
+
+            if (!$record?->clock_in_time) {
+                $flexiOpen = $this->flexiOpenYesterdayLog($employee->id, $today);
+                if ($flexiOpen) {
+                    $record = $flexiOpen;
+                    $schedule = $this->getScheduleForDate($employee->id, $yesterday);
+                    $dayRule = $this->getDayRuleForDate($schedule, $yesterday);
                 }
             }
 
